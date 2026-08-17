@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>corcho — mis notas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;600&family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#F6F2EA; --paper2:#F4EDDC; --ink:#2B241C; --ink2:#4A4136;
+    --mut:#6F655A; --mut2:#A2988C; --accent:#D97A3F; --accent-dk:#7C4A20;
+    --cork:#c9a26b;
+    --serif:"Cormorant Garamond",Georgia,serif;
+    --sans:"Inter",system-ui,sans-serif;
+    --hand:"Caveat",cursive;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{
+    font-family:var(--sans); color:var(--ink);
+    background:
+      radial-gradient(circle at 20% 20%, rgba(255,255,255,.10), transparent 40%),
+      repeating-radial-gradient(circle at 50% 50%, rgba(90,60,30,.05) 0 2px, transparent 2px 4px),
+      var(--cork);
+    min-height:100vh;
+  }
+  header{
+    display:flex; align-items:center; gap:20px; flex-wrap:wrap;
+    padding:22px 30px; background:rgba(43,36,28,.10); backdrop-filter:blur(4px);
+    border-bottom:1px solid rgba(43,36,28,.14); position:sticky; top:0; z-index:20;
+  }
+  .brand{display:flex; flex-direction:column; line-height:1}
+  .brand h1{font-family:var(--serif); font-weight:700; font-size:30px; color:var(--ink); letter-spacing:.01em}
+  .brand span{font-family:var(--hand); font-size:18px; color:var(--accent-dk); margin-top:2px}
+  .spacer{flex:1}
+  .search{
+    display:flex; align-items:center; gap:8px; background:var(--paper);
+    border:1px solid rgba(43,36,28,.16); border-radius:999px; padding:9px 16px; min-width:220px;
+    box-shadow:rgba(70,55,30,.06) 0 2px 10px;
+  }
+  .search input{border:0; outline:0; background:transparent; font-family:var(--sans); font-size:14px; color:var(--ink); width:100%}
+  .search svg{width:15px;height:15px;color:var(--mut)}
+  button{font-family:var(--sans); cursor:pointer; border:0}
+  .btn{
+    background:var(--ink); color:var(--paper); font-weight:600; font-size:13.5px;
+    border-radius:12px; padding:11px 18px; box-shadow:rgba(70,52,28,.22) 0 6px 18px; transition:transform .15s, background .2s;
+  }
+  .btn:hover{transform:translateY(-1px)}
+  .btn.ghost{background:var(--paper); color:var(--ink); box-shadow:rgba(70,55,30,.06) 0 2px 10px}
+  .btn.accent{background:var(--accent)}
+  main{padding:34px 30px 80px}
+  .count{font-family:var(--hand); font-size:19px; color:rgba(43,36,28,.7); margin-bottom:18px}
+  .board{ display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:26px; align-items:start; }
+  .empty{grid-column:1/-1; text-align:center; padding:80px 20px; color:rgba(43,36,28,.65)}
+  .empty h2{font-family:var(--serif); font-size:34px; margin-bottom:8px; color:var(--ink)}
+  .empty p{font-size:15px; max-width:420px; margin:0 auto}
+  .card{
+    position:relative; border-radius:10px; padding:20px 18px 16px;
+    box-shadow:rgba(70,52,28,.20) 0 14px 34px, rgba(70,55,30,.10) 0 2px 8px;
+    cursor:pointer; transition:transform .18s, box-shadow .18s;
+  }
+  .card:hover{transform:translateY(-4px) rotate(0deg)!important; box-shadow:rgba(70,52,28,.28) 0 22px 50px}
+  .pin{
+    position:absolute; top:-9px; left:50%; transform:translateX(-50%);
+    width:18px; height:18px; border-radius:50%;
+    background:radial-gradient(circle at 35% 30%, #ff9d6b, var(--accent) 55%, var(--accent-dk));
+    box-shadow:rgba(120,80,40,.35) 0 4px 8px, inset rgba(255,255,255,.5) 0 1px 1px;
+  }
+  .card h3{font-family:var(--serif); font-weight:600; font-size:22px; line-height:1.2; color:var(--ink); margin-bottom:8px}
+  .card .body{font-size:14px; line-height:1.5; color:var(--ink2); white-space:pre-wrap; word-break:break-word;
+    display:-webkit-box; -webkit-line-clamp:7; -webkit-box-orient:vertical; overflow:hidden}
+  .card .tags{margin-top:12px; font-family:var(--hand); font-size:16px; color:var(--accent-dk)}
+  .card .date{margin-top:8px; font-size:10.5px; color:var(--mut2); letter-spacing:.04em}
+  .card .del{
+    position:absolute; top:10px; right:10px; width:24px; height:24px; border-radius:50%;
+    background:transparent; color:var(--mut2); font-size:16px; line-height:1; opacity:0; transition:opacity .2s;
+    display:grid; place-items:center;
+  }
+  .card:hover .del{opacity:1}
+  .card .del:hover{background:rgba(43,36,28,.10); color:var(--ink)}
+  .overlay{position:fixed; inset:0; background:rgba(43,36,28,.5); backdrop-filter:blur(3px); z-index:40; display:none; align-items:center; justify-content:center; padding:20px}
+  .overlay.open{display:flex}
+  .sheet{
+    background:var(--paper); border-radius:18px; width:100%; max-width:560px; max-height:88vh; overflow:auto;
+    padding:26px; box-shadow:rgba(70,52,28,.35) 0 30px 80px;
+  }
+  .sheet h2{font-family:var(--serif); font-weight:700; font-size:26px; margin-bottom:16px}
+  label{display:block; font-size:11px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--mut); margin:14px 0 6px}
+  textarea,.field{
+    width:100%; font-family:var(--sans); font-size:14px; color:var(--ink);
+    background:#fff; border:1px solid rgba(43,36,28,.18); border-radius:12px; padding:12px; outline:0;
+  }
+  textarea{min-height:200px; resize:vertical; line-height:1.55}
+  textarea:focus,.field:focus{border-color:var(--accent)}
+  .swatchrow{display:flex; gap:8px; margin-top:6px}
+  .swatchrow span{width:26px; height:26px; border-radius:50%; cursor:pointer; border:2px solid transparent; transition:transform .12s}
+  .swatchrow span:hover{transform:scale(1.12)}
+  .swatchrow span.sel{border-color:var(--ink)}
+  .row{display:flex; gap:10px; margin-top:22px}
+  .row .btn{flex:1; text-align:center}
+  .detail .body-full{font-size:15px; line-height:1.6; color:var(--ink2); white-space:pre-wrap; word-break:break-word; margin-bottom:4px}
+  .toast{
+    position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(20px);
+    background:var(--ink); color:var(--paper); padding:10px 18px; border-radius:999px; font-size:13px;
+    opacity:0; transition:all .3s; z-index:60; pointer-events:none;
+  }
+  .toast.show{opacity:1; transform:translateX(-50%) translateY(0)}
+  a{color:var(--accent-dk)}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>🧷 corcho</h1>
+    <span>mis notas, clavadas acá</span>
+  </div>
+  <div class="spacer"></div>
+  <div class="search">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+    <input id="search" placeholder="Buscar en mis notas…" />
+  </div>
+  <button class="btn ghost" id="exportBtn">Backup</button>
+  <button class="btn accent" id="addBtn">+ Nueva nota</button>
+</header>
+
+<main>
+  <div class="count" id="count"></div>
+  <div class="board" id="board"></div>
+</main>
+
+<div class="overlay" id="editOverlay">
+  <div class="sheet">
+    <h2 id="editTitle">Nueva nota</h2>
+    <label>Título (opcional)</label>
+    <input class="field" id="titleInput" placeholder="Ponele un nombre…" />
+    <label>Nota</label>
+    <textarea id="bodyInput" placeholder="Pegá o escribí lo que quieras guardar…"></textarea>
+    <label>Etiquetas (opcional)</label>
+    <input class="field" id="tagsInput" placeholder="ej: idea, cliente, inspiración" />
+    <label>Color del papel</label>
+    <div class="swatchrow" id="colorRow"></div>
+    <div class="row">
+      <button class="btn ghost" id="cancelEdit">Cancelar</button>
+      <button class="btn accent" id="saveEdit">Clavar en el corcho</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="detailOverlay">
+  <div class="sheet detail" id="detailContent"></div>
+</div>
+
+<input type="file" id="importFile" accept="application/json" style="display:none" />
+<div class="toast" id="toast"></div>
+
+<script>
+const KEY = "corcho.notes.v1";
+const $ = s => document.querySelector(s);
+const COLORS = ["#F4EDDC","#ECD3CD","#CFD3BD","#CFC6E0","#F7C99B","#F6F2EA"];
+let notes = load();
+let editingId = null;
+let pickedColor = COLORS[0];
+
+function load(){ try{ return JSON.parse(localStorage.getItem(KEY)) || []; }catch(e){ return []; } }
+function save(){ localStorage.setItem(KEY, JSON.stringify(notes)); }
+function toast(m){ const t=$("#toast"); t.textContent=m; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),1600); }
+function rot(id){ let h=0; for(const c of id) h=(h*31+c.charCodeAt(0))%1000; return ((h%7)-3); }
+function esc(s){ return (s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function fdate(ts){ try{ return new Date(ts).toLocaleDateString("es-AR",{day:"2-digit",month:"short",year:"numeric"}); }catch(e){ return ""; } }
+function linkify(s){ return esc(s).replace(/(https?:\/\/[^\s]+)/g,'<a href="$1" target="_blank" rel="noopener">$1</a>'); }
+
+function render(){
+  const q=$("#search").value.trim().toLowerCase();
+  const list=notes.filter(n=>!q || (n.title+" "+n.body+" "+n.tags).toLowerCase().includes(q));
+  $("#count").textContent = notes.length ? `${notes.length} nota${notes.length>1?"s":""}`+(q?` · ${list.length} coinciden`:"") : "";
+  const board=$("#board");
+  if(!notes.length){
+    board.innerHTML=`<div class="empty"><h2>El corcho está vacío</h2><p>Tocá <b>+ Nueva nota</b> y pegá o escribí lo que quieras guardar. Queda clavado acá.</p></div>`;
+    return;
+  }
+  board.innerHTML=list.map(n=>`
+    <div class="card" style="background:${n.color||'#F4EDDC'}; transform:rotate(${rot(n.id)}deg)" data-id="${n.id}">
+      <div class="pin"></div>
+      <button class="del" data-del="${n.id}" title="Sacar del corcho">×</button>
+      ${n.title?`<h3>${esc(n.title)}</h3>`:""}
+      <div class="body">${esc(n.body)}</div>
+      ${n.tags?`<div class="tags">${esc(n.tags)}</div>`:""}
+      <div class="date">${fdate(n.created)}</div>
+    </div>`).join("");
+}
+
+function openEditor(note){
+  editingId = note ? note.id : null;
+  pickedColor = note ? (note.color||COLORS[0]) : COLORS[0];
+  $("#editTitle").textContent = note ? "Editar nota" : "Nueva nota";
+  $("#titleInput").value = note ? note.title : "";
+  $("#bodyInput").value = note ? note.body : "";
+  $("#tagsInput").value = note ? note.tags : "";
+  $("#colorRow").innerHTML = COLORS.map(c=>`<span data-c="${c}" style="background:${c}" class="${c===pickedColor?'sel':''}"></span>`).join("");
+  $("#editOverlay").classList.add("open");
+  setTimeout(()=>$("#bodyInput").focus(),50);
+}
+
+function openDetail(n){
+  $("#detailContent").innerHTML=`
+    ${n.title?`<h2>${esc(n.title)}</h2>`:""}
+    <div class="body-full">${linkify(n.body)}</div>
+    ${n.tags?`<div style="font-family:var(--hand);font-size:18px;color:var(--accent-dk);margin-top:10px">${esc(n.tags)}</div>`:""}
+    <div style="font-size:11px;color:var(--mut);margin-top:8px">${fdate(n.created)}</div>
+    <div class="row">
+      <button class="btn ghost" data-edit="${n.id}">Editar</button>
+      <button class="btn ghost" data-copy="${n.id}">Copiar</button>
+      <button class="btn ghost" data-delfull="${n.id}" style="color:#a33">Eliminar</button>
+      <button class="btn" data-close>Cerrar</button>
+    </div>`;
+  $("#detailOverlay").classList.add("open");
+}
+
+$("#addBtn").onclick=()=>openEditor(null);
+$("#cancelEdit").onclick=()=>$("#editOverlay").classList.remove("open");
+$("#colorRow").onclick=(e)=>{ const s=e.target.closest("[data-c]"); if(!s)return; pickedColor=s.dataset.c; [...$("#colorRow").children].forEach(x=>x.classList.toggle("sel",x.dataset.c===pickedColor)); };
+$("#saveEdit").onclick=()=>{
+  const title=$("#titleInput").value.trim();
+  const body=$("#bodyInput").value.trim();
+  const tags=$("#tagsInput").value.trim();
+  if(!body && !title){ toast("Escribí algo primero"); return; }
+  if(editingId){
+    const n=notes.find(x=>x.id===editingId);
+    if(n){ n.title=title; n.body=body; n.tags=tags; n.color=pickedColor; }
+  }else{
+    notes.unshift({ id:Date.now()+"-"+Math.random().toString(36).slice(2,6), title, body, tags, color:pickedColor, created:Date.now() });
+  }
+  save(); render();
+  $("#editOverlay").classList.remove("open");
+  toast(editingId?"Nota actualizada ✓":"Clavada en el corcho ✓");
+  editingId=null;
+};
+$("#search").oninput=render;
+$("#board").onclick=(e)=>{
+  const del=e.target.closest("[data-del]");
+  if(del){ e.stopPropagation(); if(confirm("¿Sacar esta nota del corcho?")){ notes=notes.filter(n=>n.id!==del.dataset.del); save(); render(); } return; }
+  const card=e.target.closest(".card");
+  if(card){ const n=notes.find(x=>x.id===card.dataset.id); if(n) openDetail(n); }
+};
+$("#detailOverlay").onclick=(e)=>{
+  if(e.target.id==="detailOverlay"||e.target.hasAttribute("data-close")){ $("#detailOverlay").classList.remove("open"); return; }
+  const ed=e.target.closest("[data-edit]"); if(ed){ const n=notes.find(x=>x.id===ed.dataset.edit); $("#detailOverlay").classList.remove("open"); openEditor(n); return; }
+  const cp=e.target.closest("[data-copy]"); if(cp){ const n=notes.find(x=>x.id===cp.dataset.copy); navigator.clipboard.writeText((n.title?n.title+"\n\n":"")+n.body); toast("Copiado"); return; }
+  const df=e.target.closest("[data-delfull]"); if(df){ if(confirm("¿Eliminar esta nota?")){ notes=notes.filter(n=>n.id!==df.dataset.delfull); save(); render(); $("#detailOverlay").classList.remove("open"); } }
+};
+$("#editOverlay").onclick=(e)=>{ if(e.target.id==="editOverlay") $("#editOverlay").classList.remove("open"); };
+$("#exportBtn").onclick=()=>{
+  if(!notes.length){ toast("No hay nada para exportar"); return; }
+  const blob=new Blob([JSON.stringify(notes,null,2)],{type:"application/json"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+  a.download="corcho-backup-"+new Date().toISOString().slice(0,10)+".json"; a.click();
+  toast("Backup descargado");
+};
+$("#exportBtn").oncontextmenu=(e)=>{ e.preventDefault(); $("#importFile").click(); };
+$("#importFile").onchange=(e)=>{
+  const f=e.target.files[0]; if(!f)return;
+  const r=new FileReader();
+  r.onload=()=>{ try{ const d=JSON.parse(r.result); if(Array.isArray(d)){ notes=d.concat(notes); save(); render(); toast("Backup importado"); } }catch(err){ toast("Archivo inválido"); } };
+  r.readAsText(f);
+};
+document.addEventListener("keydown",e=>{
+  if(e.key==="Escape"){ document.querySelectorAll(".overlay.open").forEach(o=>o.classList.remove("open")); }
+  if((e.ctrlKey||e.metaKey)&&e.key==="Enter"&&$("#editOverlay").classList.contains("open")){ $("#saveEdit").click(); }
+});
+
+render();
+</script>
+</body>
+</html>
