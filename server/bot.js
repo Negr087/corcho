@@ -103,7 +103,10 @@ function startBot() {
         );
       } catch (err) {
         console.error("Error transcribiendo audio:", err);
-        bot.sendMessage(msg.chat.id, "Hubo un error procesando el audio.");
+        bot.sendMessage(
+          msg.chat.id,
+          "No pude procesar el audio (problema momentáneo del servidor). Mandalo de nuevo en un rato, o escribime el texto directamente."
+        );
       } finally {
         if (tmpPath) fs.unlink(tmpPath, () => {});
       }

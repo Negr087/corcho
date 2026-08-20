@@ -4,16 +4,33 @@ const fs = require("fs");
 
 let transcriberPromise = null;
 
+function loadTranscriber() {
+  const modelId = process.env.WHISPER_MODEL || "Xenova/whisper-base";
+  console.log(`Cargando modelo Whisper "${modelId}"...`);
+  return import("@huggingface/transformers")
+    .then(({ pipeline }) => pipeline("automatic-speech-recognition", modelId))
+    .then((t) => {
+      console.log(`Modelo Whisper "${modelId}" listo.`);
+      return t;
+    })
+    .catch((err) => {
+      // si falla (ej. poca RAM libre en el momento), no dejamos la promesa
+      // rota cacheada para siempre: el proximo intento vuelve a cargar.
+      transcriberPromise = null;
+      throw err;
+    });
+}
+
 function getTranscriber() {
-  if (!transcriberPromise) {
-    const modelId = process.env.WHISPER_MODEL || "Xenova/whisper-base";
-    console.log(`Cargando modelo Whisper "${modelId}" (la primera vez descarga los pesos)...`);
-    transcriberPromise = import("@huggingface/transformers").then(({ pipeline }) =>
-      pipeline("automatic-speech-recognition", modelId)
-    );
-  }
+  if (!transcriberPromise) transcriberPromise = loadTranscriber();
   return transcriberPromise;
 }
+
+// Precarga el modelo apenas arranca el server, en vez de esperar al primer
+// audio real. En VPS con poca RAM libre, cargar bajo demanda compite con
+// lo que sea que este pasando en ese momento y puede fallar (system error
+// number 13 al leer el .onnx); precargar temprano reduce las chances.
+getTranscriber().catch((err) => console.error("No se pudo precargar Whisper:", err.message));
 
 function convertToWav(inputPath) {
   return new Promise((resolve, reject) => {
@@ -58,10 +75,21 @@ async function transcribeAudioFile(inputPath) {
   const wavPath = await convertToWav(inputPath);
   try {
     const audio = wavToFloat32(wavPath);
-    const transcriber = await getTranscriber();
     const language = process.env.WHISPER_LANGUAGE || "spanish";
-    const result = await transcriber(audio, { language, task: "transcribe" });
-    return (result.text || "").trim();
+    const MAX_ATTEMPTS = 3;
+    let lastErr;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const transcriber = await getTranscriber();
+        const result = await transcriber(audio, { language, task: "transcribe" });
+        return (result.text || "").trim();
+      } catch (err) {
+        lastErr = err;
+        console.error(`Transcripcion, intento ${attempt}/${MAX_ATTEMPTS} fallo:`, err.message);
+        if (attempt < MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, 1500 * attempt));
+      }
+    }
+    throw lastErr;
   } finally {
     fs.unlink(wavPath, () => {});
   }

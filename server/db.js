@@ -42,10 +42,21 @@ function genId() {
   return Date.now() + "-" + Math.random().toString(36).slice(2, 6);
 }
 
-function scatterPosition() {
+function scatterPosition(owner) {
+  const last = owner
+    ? db.prepare("SELECT x, y FROM notes WHERE owner = ? ORDER BY created DESC LIMIT 1").get(owner)
+    : null;
+  if (last) {
+    // al lado de la ultima nota clavada, con un poco de jitter para que no
+    // queden todas pegadas si se agregan varias seguidas.
+    return {
+      x: Math.round(last.x + 260 + (Math.random() - 0.5) * 60),
+      y: Math.round(last.y + (Math.random() - 0.5) * 180),
+    };
+  }
   return {
-    x: Math.round((Math.random() - 0.5) * 700),
-    y: Math.round((Math.random() - 0.5) * 500),
+    x: Math.round((Math.random() - 0.5) * 500),
+    y: Math.round((Math.random() - 0.5) * 350),
   };
 }
 
@@ -56,7 +67,7 @@ function listNotes(owner) {
 function createNote({ title = "", body = "", tags = "", color = "#F4EDDC", source = "web", x, y, owner }) {
   const id = genId();
   const created = Date.now();
-  const pos = x !== undefined && y !== undefined ? { x, y } : scatterPosition();
+  const pos = x !== undefined && y !== undefined ? { x, y } : scatterPosition(owner);
   db.prepare(
     "INSERT INTO notes (id, title, body, tags, color, source, created, x, y, owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
   ).run(id, title, body, tags, color, source, created, pos.x, pos.y, owner);
