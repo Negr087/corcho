@@ -224,10 +224,11 @@ function setZoomAt(cx, cy, newZoom){
   pan.x = cx - pt.x * zoom;
   pan.y = cy - pt.y * zoom;
   applyTransform();
+  scheduleSaveView();
 }
 function fitAll(){
   const rect = $("#viewport").getBoundingClientRect();
-  if(!notes.length){ zoom = 1; pan.x = rect.width/2; pan.y = rect.height/2; applyTransform(); return; }
+  if(!notes.length){ zoom = 1; pan.x = rect.width/2; pan.y = rect.height/2; applyTransform(); saveView(); return; }
   const xs = notes.map(n=>n.x ?? 0), ys = notes.map(n=>n.y ?? 0);
   const minX = Math.min(...xs) - 150, maxX = Math.max(...xs) + 150;
   const minY = Math.min(...ys) - 150, maxY = Math.max(...ys) + 150;
@@ -237,6 +238,37 @@ function fitAll(){
   pan.x = rect.width / 2 - cx * zoom;
   pan.y = rect.height / 2 - cy * zoom;
   applyTransform();
+  saveView();
+}
+
+// --- persistencia de la vista (pan/zoom) entre visitas ---
+const VIEW_KEY = "corcho.view.v1";
+let saveViewTimer = null;
+function saveView(){
+  try { localStorage.setItem(VIEW_KEY, JSON.stringify({ x: pan.x, y: pan.y, zoom })); } catch(e){}
+}
+function scheduleSaveView(){
+  clearTimeout(saveViewTimer);
+  saveViewTimer = setTimeout(saveView, 400);
+}
+function loadSavedView(){
+  try {
+    const v = JSON.parse(localStorage.getItem(VIEW_KEY));
+    if (v && typeof v.x === "number" && typeof v.y === "number" && typeof v.zoom === "number") return v;
+  } catch(e){}
+  return null;
+}
+function initView(){
+  const saved = loadSavedView();
+  if (saved){
+    pan.x = saved.x; pan.y = saved.y; zoom = saved.zoom;
+    applyTransform();
+  } else {
+    const rect = $("#viewport").getBoundingClientRect();
+    zoom = 1; pan.x = rect.width/2; pan.y = rect.height/2;
+    applyTransform();
+    saveView();
+  }
 }
 
 function checkAuth(res){
@@ -491,7 +523,7 @@ viewport.addEventListener("pointermove", (e) => {
   pan.y = panStart.panY + (e.clientY - panStart.clientY);
   applyTransform();
 });
-function endPan(){ if(isPanning){ isPanning=false; interacting=false; viewport.classList.remove("panning"); panStart=null; } }
+function endPan(){ if(isPanning){ isPanning=false; interacting=false; viewport.classList.remove("panning"); panStart=null; saveView(); } }
 viewport.addEventListener("pointerup", endPan);
 viewport.addEventListener("pointercancel", endPan);
 viewport.addEventListener("wheel", (e) => {
@@ -503,6 +535,7 @@ viewport.addEventListener("wheel", (e) => {
   } else {
     pan.x -= e.deltaX; pan.y -= e.deltaY;
     applyTransform();
+    scheduleSaveView();
   }
 }, { passive:false });
 $("#zoomIn").onclick = () => { const r=viewport.getBoundingClientRect(); setZoomAt(r.width/2, r.height/2, zoom*1.25); };
@@ -515,7 +548,7 @@ setInterval(async ()=>{
 }, 15000);
 
 loadMe();
-loadNotes().then(() => { fitAll(); render(); });
+loadNotes().then(() => { initView(); render(); });
 </script>
 </body>
 </html>

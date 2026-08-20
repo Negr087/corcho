@@ -30,11 +30,11 @@ app.use(
 app.use(passport.initialize());
 app.use(passport.session());
 
-app.use(express.static(path.join(__dirname, "..", "public"), { index: false }));
+app.use(express.static(path.join(__dirname, "..", "public")));
 
 app.get("/login", (req, res) => {
   if (req.isAuthenticated()) return res.redirect("/");
-  res.sendFile(path.join(__dirname, "..", "public", "login.html"));
+  res.sendFile(path.join(__dirname, "views", "login.html"));
 });
 
 app.get("/auth/google", passport.authenticate("google", { scope: ["profile", "email"] }));
@@ -55,7 +55,7 @@ app.get("/api/me", (req, res) => {
 });
 
 app.get("/", ensureAuthPage, (req, res) => {
-  res.sendFile(path.join(__dirname, "..", "public", "index.html"));
+  res.sendFile(path.join(__dirname, "views", "app.html"));
 });
 
 app.get("/api/notes", ensureAuthApi, (req, res) => {
