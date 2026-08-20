@@ -17,17 +17,25 @@ db.exec(`
     source TEXT DEFAULT 'web',
     created INTEGER NOT NULL,
     x REAL,
-    y REAL
+    y REAL,
+    owner TEXT
   )
 `);
 
 const existingColumns = db.prepare("PRAGMA table_info(notes)").all().map((c) => c.name);
 if (!existingColumns.includes("x")) db.exec("ALTER TABLE notes ADD COLUMN x REAL");
 if (!existingColumns.includes("y")) db.exec("ALTER TABLE notes ADD COLUMN y REAL");
+if (!existingColumns.includes("owner")) db.exec("ALTER TABLE notes ADD COLUMN owner TEXT");
 
 for (const row of db.prepare("SELECT id FROM notes WHERE x IS NULL OR y IS NULL").all()) {
   const pos = scatterPosition();
   db.prepare("UPDATE notes SET x = ?, y = ? WHERE id = ?").run(pos.x, pos.y, row.id);
+}
+
+// Notas creadas antes de que existiera el login (o por el bot antes de tener owner)
+// quedan asignadas al dueño de la app.
+if (process.env.OWNER_EMAIL) {
+  db.prepare("UPDATE notes SET owner = ? WHERE owner IS NULL").run(process.env.OWNER_EMAIL);
 }
 
 function genId() {
@@ -41,22 +49,22 @@ function scatterPosition() {
   };
 }
 
-function listNotes() {
-  return db.prepare("SELECT * FROM notes ORDER BY created DESC").all();
+function listNotes(owner) {
+  return db.prepare("SELECT * FROM notes WHERE owner = ? ORDER BY created DESC").all(owner);
 }
 
-function createNote({ title = "", body = "", tags = "", color = "#F4EDDC", source = "web", x, y }) {
+function createNote({ title = "", body = "", tags = "", color = "#F4EDDC", source = "web", x, y, owner }) {
   const id = genId();
   const created = Date.now();
   const pos = x !== undefined && y !== undefined ? { x, y } : scatterPosition();
   db.prepare(
-    "INSERT INTO notes (id, title, body, tags, color, source, created, x, y) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-  ).run(id, title, body, tags, color, source, created, pos.x, pos.y);
-  return { id, title, body, tags, color, source, created, x: pos.x, y: pos.y };
+    "INSERT INTO notes (id, title, body, tags, color, source, created, x, y, owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(id, title, body, tags, color, source, created, pos.x, pos.y, owner);
+  return { id, title, body, tags, color, source, created, x: pos.x, y: pos.y, owner };
 }
 
-function updateNote(id, { title, body, tags, color, x, y }) {
-  const existing = db.prepare("SELECT * FROM notes WHERE id = ?").get(id);
+function updateNote(id, owner, { title, body, tags, color, x, y }) {
+  const existing = db.prepare("SELECT * FROM notes WHERE id = ? AND owner = ?").get(id, owner);
   if (!existing) return null;
   const next = {
     title: title !== undefined ? title : existing.title,
@@ -66,25 +74,26 @@ function updateNote(id, { title, body, tags, color, x, y }) {
     x: x !== undefined ? x : existing.x,
     y: y !== undefined ? y : existing.y,
   };
-  db.prepare("UPDATE notes SET title = ?, body = ?, tags = ?, color = ?, x = ?, y = ? WHERE id = ?").run(
+  db.prepare("UPDATE notes SET title = ?, body = ?, tags = ?, color = ?, x = ?, y = ? WHERE id = ? AND owner = ?").run(
     next.title,
     next.body,
     next.tags,
     next.color,
     next.x,
     next.y,
-    id
+    id,
+    owner
   );
   return db.prepare("SELECT * FROM notes WHERE id = ?").get(id);
 }
 
-function updateNotePosition(id, x, y) {
-  const res = db.prepare("UPDATE notes SET x = ?, y = ? WHERE id = ?").run(x, y, id);
+function updateNotePosition(id, owner, x, y) {
+  const res = db.prepare("UPDATE notes SET x = ?, y = ? WHERE id = ? AND owner = ?").run(x, y, id, owner);
   return res.changes > 0;
 }
 
-function deleteNote(id) {
-  const res = db.prepare("DELETE FROM notes WHERE id = ?").run(id);
+function deleteNote(id, owner) {
+  const res = db.prepare("DELETE FROM notes WHERE id = ? AND owner = ?").run(id, owner);
   return res.changes > 0;
 }
 

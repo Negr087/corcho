@@ -20,6 +20,10 @@ function startBot() {
       "TELEGRAM_ALLOWED_USER_ID no configurado: cualquiera que le escriba al bot va a poder agregar notas."
     );
   }
+  const owner = process.env.OWNER_EMAIL;
+  if (!owner) {
+    console.warn("OWNER_EMAIL no configurado: las notas del bot no van a aparecer en ningun corcho web.");
+  }
 
   const bot = new TelegramBot(token, { polling: true });
   let lastCreatedId = null;
@@ -40,7 +44,7 @@ function startBot() {
 
   bot.onText(/^\/listar/, (msg) => {
     if (!isAllowed(msg)) return;
-    const notes = listNotes().slice(0, 5);
+    const notes = listNotes(owner).slice(0, 5);
     if (!notes.length) {
       bot.sendMessage(msg.chat.id, "El corcho esta vacio.");
       return;
@@ -55,7 +59,7 @@ function startBot() {
       bot.sendMessage(msg.chat.id, "No hay nada reciente para borrar en esta sesion.");
       return;
     }
-    deleteNote(lastCreatedId);
+    deleteNote(lastCreatedId, owner);
     bot.sendMessage(msg.chat.id, "Borrada.");
     lastCreatedId = null;
   });
@@ -70,7 +74,7 @@ function startBot() {
 
     if (msg.text && !msg.text.startsWith("/")) {
       const { title, body, tags } = deriveNote(msg.text);
-      const note = createNote({ title, body, tags, source: "telegram" });
+      const note = createNote({ title, body, tags, source: "telegram", owner });
       lastCreatedId = note.id;
       bot.sendMessage(msg.chat.id, `Clavada en el corcho ✓${tags ? `\nEtiquetas: ${tags}` : ""}`);
       return;
@@ -91,7 +95,7 @@ function startBot() {
           return;
         }
         const { title, body, tags } = deriveNote(text);
-        const note = createNote({ title, body, tags, source: "telegram-audio" });
+        const note = createNote({ title, body, tags, source: "telegram-audio", owner });
         lastCreatedId = note.id;
         bot.sendMessage(
           msg.chat.id,

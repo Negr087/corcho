@@ -1,12 +1,14 @@
 # corcho
 
-Corcho de notas con backend propio: la página web y un bot de Telegram comparten la misma base de datos. Escribile o mandale un audio al bot y la nota aparece clavada en el corcho.
+Corcho de notas multiusuario con backend propio: cada quien inicia sesión con Google y tiene su propio corcho privado. Un bot de Telegram (del dueño de la app) también puede clavar notas — escribile o mandale un audio y la nota aparece en su corcho.
 
 ## Arquitectura
 
-- `server/` — backend Node/Express. Expone `/api/notes` (CRUD) y corre el bot de Telegram en paralelo.
-- `public/index.html` — la página, ahora consume la API en vez de `localStorage`.
-- `data/corcho.db` — SQLite (vía el módulo nativo `node:sqlite` de Node 22+, sin dependencias que compilar).
+- `server/` — backend Node/Express. Expone `/api/notes` (CRUD, protegido) y corre el bot de Telegram en paralelo.
+- `server/auth.js` — login con Google (Passport) restringido a una lista de emails permitidos.
+- `public/index.html` — la página (protegida, redirige a `/login` si no hay sesión), consume la API.
+- `public/login.html` — pantalla de login con Google.
+- `data/corcho.db` — SQLite (vía el módulo nativo `node:sqlite` de Node 22+, sin dependencias que compilar). Cada nota tiene un `owner` (email) — las consultas siempre filtran por el usuario logueado.
 - Transcripción de audio: 100% local con Whisper (`@huggingface/transformers`, corre en CPU vía ONNX), sin API keys ni costo por uso. `ffmpeg-static` convierte el audio de Telegram (OGG/Opus) a WAV antes de transcribir.
 
 ## Puesta en marcha
@@ -39,6 +41,21 @@ Corcho de notas con backend propio: la página web y un bot de Telegram comparte
 
    La primera vez que mandes un audio, se descargan los pesos de Whisper (~150MB, una sola vez, quedan cacheados).
 
+4b. **Login con Google:**
+   - En [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials): pantalla de consentimiento OAuth (tipo Externo) → crear credenciales → ID de cliente OAuth (Aplicación web).
+   - En "URI de redireccionamiento autorizados" agregar `{APP_URL}/auth/google/callback` (ej. `https://corcho.sebadev.com.ar/auth/google/callback` en prod, `http://localhost:3000/auth/google/callback` en local).
+   - Completar en `.env`:
+     ```
+     APP_URL=https://tu-dominio
+     GOOGLE_CLIENT_ID=...
+     GOOGLE_CLIENT_SECRET=...
+     ALLOWED_EMAILS=vos@gmail.com,otra-persona@gmail.com
+     OWNER_EMAIL=vos@gmail.com
+     SESSION_SECRET=cualquier-string-largo-random
+     ```
+   - `OWNER_EMAIL` tiene que ser el mismo email de Google con el que el dueño del bot inicia sesión en la web — así las notas creadas por Telegram aparecen en su corcho. Solo importa para el dueño; el resto de la gente en `ALLOWED_EMAILS` tiene su corcho vacío y privado, sin acceso al bot (para eso necesitarían forkear el proyecto y poner su propio bot/variables).
+   - Alguien que inicie sesión con un email fuera de `ALLOWED_EMAILS` ve un error y no entra.
+
 ## Uso del bot
 
 - Mandale un **texto** → se crea una nota (la primera línea como título si es corta).
@@ -53,6 +70,7 @@ Corcho de notas con backend propio: la página web y un bot de Telegram comparte
 - El idioma de transcripción por defecto es español (`WHISPER_LANGUAGE=spanish` en `.env.example`).
 - `server/index.js` fuerza IPv4 puro (`net.setDefaultAutoSelectFamily(false)` + `dns.setDefaultResultOrder('ipv4first')`) antes de cualquier otra cosa. Es un workaround necesario en entornos (WSL2, algunos VPS) que anuncian rutas IPv6 rotas — sin esto, el polling de Telegram falla con `EFATAL: AggregateError` de forma intermitente aunque la red ande bien.
 - Título/etiquetas de las notas que crea el bot se derivan con heurísticas simples en `server/noteHeuristics.js` (primera oración como título, palabras clave para etiquetas) — no usa ningún LLM, así que es gratis pero limitado.
+- Las sesiones de login se guardan en memoria (`express-session` sin store persistente). Si el proceso se reinicia (deploy, crash), todos quedan desloheados y tienen que volver a entrar con Google — un click, sin fricción real. Si en algún momento molesta, se puede sumar un store persistente (ej. `connect-sqlite3`).
 
 ## Producción (VPS Windows)
 
