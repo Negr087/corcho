@@ -1,24 +1,64 @@
 const { spawn } = require("child_process");
 const ffmpegPath = require("ffmpeg-static");
 const fs = require("fs");
+const path = require("path");
 
+const REMOTE_URL = process.env.TRANSCRIBE_REMOTE_URL;
+
+// --- modo remoto: le pasa el audio a un servicio de transcripcion aparte ---
+// (pensado para una maquina con mas RAM, ej. una mini PC en casa conectada
+// por Tailscale) en vez de cargar Whisper en el propio proceso del VPS.
+async function transcribeRemote(inputPath) {
+  const url = REMOTE_URL.replace(/\/$/, "") + "/transcribe";
+  const MAX_ATTEMPTS = 3;
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const buf = fs.readFileSync(inputPath);
+      const form = new FormData();
+      form.append("audio", new Blob([buf]), path.basename(inputPath));
+      const headers = {};
+      if (process.env.TRANSCRIBE_SECRET) headers["x-secret"] = process.env.TRANSCRIBE_SECRET;
+      const res = await fetch(url, { method: "POST", body: form, headers });
+      if (!res.ok) throw new Error(`transcribe-service respondio HTTP ${res.status}`);
+      const data = await res.json();
+      return (data.text || "").trim();
+    } catch (err) {
+      lastErr = err;
+      console.error(`Transcripcion remota, intento ${attempt}/${MAX_ATTEMPTS} fallo:`, err.message);
+      if (attempt < MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, 1500 * attempt));
+    }
+  }
+  throw lastErr;
+}
+
+// --- modo local: corre Whisper en el propio proceso (usa bastante RAM) ---
 let transcriberPromise = null;
 
-function loadTranscriber() {
+async function loadTranscriber() {
   const modelId = process.env.WHISPER_MODEL || "Xenova/whisper-base";
   console.log(`Cargando modelo Whisper "${modelId}"...`);
-  return import("@huggingface/transformers")
-    .then(({ pipeline }) => pipeline("automatic-speech-recognition", modelId))
-    .then((t) => {
-      console.log(`Modelo Whisper "${modelId}" listo.`);
-      return t;
-    })
-    .catch((err) => {
-      // si falla (ej. poca RAM libre en el momento), no dejamos la promesa
-      // rota cacheada para siempre: el proximo intento vuelve a cargar.
-      transcriberPromise = null;
-      throw err;
-    });
+  const { pipeline, env } = await import("@huggingface/transformers");
+  try {
+    const t = await pipeline("automatic-speech-recognition", modelId);
+    console.log(`Modelo Whisper "${modelId}" listo.`);
+    return t;
+  } catch (err) {
+    transcriberPromise = null;
+    // La descarga puede haber quedado truncada (bug conocido con el
+    // backend de almacenamiento "Xet" de HuggingFace: no valida que el
+    // archivo .onnx se haya bajado completo antes de cachearlo). Si no
+    // borramos ese cache roto, todos los reintentos van a releer el mismo
+    // archivo incompleto y fallar siempre igual.
+    try {
+      const cacheDir = path.join(env.cacheDir, modelId);
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+      console.error(`Cache de "${modelId}" parece corrupto, lo borre para reintentar desde cero.`);
+    } catch (cleanupErr) {
+      console.error("No se pudo limpiar el cache corrupto:", cleanupErr.message);
+    }
+    throw err;
+  }
 }
 
 function getTranscriber() {
@@ -26,11 +66,14 @@ function getTranscriber() {
   return transcriberPromise;
 }
 
-// Precarga el modelo apenas arranca el server, en vez de esperar al primer
-// audio real. En VPS con poca RAM libre, cargar bajo demanda compite con
-// lo que sea que este pasando en ese momento y puede fallar (system error
-// number 13 al leer el .onnx); precargar temprano reduce las chances.
-getTranscriber().catch((err) => console.error("No se pudo precargar Whisper:", err.message));
+if (!REMOTE_URL) {
+  // Precarga el modelo apenas arranca el server en vez de esperar al primer
+  // audio real. En una maquina con poca RAM libre, cargar bajo demanda
+  // compite con lo que sea que este pasando en ese momento y puede fallar;
+  // precargar temprano reduce las chances. Si hay un servicio remoto
+  // configurado, ni siquiera tocamos esto: el VPS no carga Whisper nunca.
+  getTranscriber().catch((err) => console.error("No se pudo precargar Whisper:", err.message));
+}
 
 function convertToWav(inputPath) {
   return new Promise((resolve, reject) => {
@@ -71,7 +114,7 @@ function wavToFloat32(wavPath) {
   return float32;
 }
 
-async function transcribeAudioFile(inputPath) {
+async function transcribeLocal(inputPath) {
   const wavPath = await convertToWav(inputPath);
   try {
     const audio = wavToFloat32(wavPath);
@@ -93,6 +136,10 @@ async function transcribeAudioFile(inputPath) {
   } finally {
     fs.unlink(wavPath, () => {});
   }
+}
+
+function transcribeAudioFile(inputPath) {
+  return REMOTE_URL ? transcribeRemote(inputPath) : transcribeLocal(inputPath);
 }
 
 module.exports = { transcribeAudioFile };
