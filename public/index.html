@@ -4,6 +4,8 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>corcho — mis notas</title>
+<link rel="icon" type="image/png" href="/logocorcho.png">
+<link rel="apple-touch-icon" href="/logocorcho.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;600&family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -71,7 +73,7 @@
   .card .body{font-size:14px; line-height:1.5; color:var(--ink2); white-space:pre-wrap; word-break:break-word;
     display:-webkit-box; -webkit-line-clamp:7; -webkit-box-orient:vertical; overflow:hidden}
   .card .tags{margin-top:12px; font-family:var(--hand); font-size:16px; color:var(--accent-dk)}
-  .card .date{margin-top:8px; font-size:10.5px; color:var(--mut2); letter-spacing:.04em}
+  .card .date{margin-top:8px; font-size:10.5px; color:var(--mut2); letter-spacing:.04em; display:flex; align-items:center; gap:5px}
   .card .del{
     position:absolute; top:10px; right:10px; width:24px; height:24px; border-radius:50%;
     background:transparent; color:var(--mut2); font-size:16px; line-height:1; opacity:0; transition:opacity .2s;
@@ -155,20 +157,42 @@
 <div class="toast" id="toast"></div>
 
 <script>
-const KEY = "corcho.notes.v1";
 const $ = s => document.querySelector(s);
 const COLORS = ["#F4EDDC","#ECD3CD","#CFD3BD","#CFC6E0","#F7C99B","#F6F2EA"];
-let notes = load();
+let notes = [];
 let editingId = null;
 let pickedColor = COLORS[0];
 
-function load(){ try{ return JSON.parse(localStorage.getItem(KEY)) || []; }catch(e){ return []; } }
-function save(){ localStorage.setItem(KEY, JSON.stringify(notes)); }
+async function loadNotes(){
+  const r = await fetch("/api/notes");
+  notes = await r.json();
+}
+async function apiCreate(note){
+  const r = await fetch("/api/notes", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(note) });
+  return r.json();
+}
+async function apiUpdate(id, note){
+  const r = await fetch("/api/notes/"+encodeURIComponent(id), { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(note) });
+  return r.json();
+}
+async function apiDelete(id){
+  await fetch("/api/notes/"+encodeURIComponent(id), { method:"DELETE" });
+}
+
 function toast(m){ const t=$("#toast"); t.textContent=m; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),1600); }
 function rot(id){ let h=0; for(const c of id) h=(h*31+c.charCodeAt(0))%1000; return ((h%7)-3); }
 function esc(s){ return (s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function fdate(ts){ try{ return new Date(ts).toLocaleDateString("es-AR",{day:"2-digit",month:"short",year:"numeric"}); }catch(e){ return ""; } }
 function linkify(s){ return esc(s).replace(/(https?:\/\/[^\s]+)/g,'<a href="$1" target="_blank" rel="noopener">$1</a>'); }
+function srcBadge(n){
+  if(n.source==="telegram") return "💬 ";
+  if(n.source==="telegram-audio") return "🎙️ ";
+  return "";
+}
+
+function anyOverlayOpen(){
+  return $("#editOverlay").classList.contains("open") || $("#detailOverlay").classList.contains("open");
+}
 
 function render(){
   const q=$("#search").value.trim().toLowerCase();
@@ -176,7 +200,7 @@ function render(){
   $("#count").textContent = notes.length ? `${notes.length} nota${notes.length>1?"s":""}`+(q?` · ${list.length} coinciden`:"") : "";
   const board=$("#board");
   if(!notes.length){
-    board.innerHTML=`<div class="empty"><h2>El corcho está vacío</h2><p>Tocá <b>+ Nueva nota</b> y pegá o escribí lo que quieras guardar. Queda clavado acá.</p></div>`;
+    board.innerHTML=`<div class="empty"><h2>El corcho está vacío</h2><p>Tocá <b>+ Nueva nota</b>, escribile al bot de Telegram, o mandale un audio. Queda clavado acá.</p></div>`;
     return;
   }
   board.innerHTML=list.map(n=>`
@@ -186,7 +210,7 @@ function render(){
       ${n.title?`<h3>${esc(n.title)}</h3>`:""}
       <div class="body">${esc(n.body)}</div>
       ${n.tags?`<div class="tags">${esc(n.tags)}</div>`:""}
-      <div class="date">${fdate(n.created)}</div>
+      <div class="date">${srcBadge(n)}${fdate(n.created)}</div>
     </div>`).join("");
 }
 
@@ -207,7 +231,7 @@ function openDetail(n){
     ${n.title?`<h2>${esc(n.title)}</h2>`:""}
     <div class="body-full">${linkify(n.body)}</div>
     ${n.tags?`<div style="font-family:var(--hand);font-size:18px;color:var(--accent-dk);margin-top:10px">${esc(n.tags)}</div>`:""}
-    <div style="font-size:11px;color:var(--mut);margin-top:8px">${fdate(n.created)}</div>
+    <div style="font-size:11px;color:var(--mut);margin-top:8px">${srcBadge(n)}${fdate(n.created)}</div>
     <div class="row">
       <button class="btn ghost" data-edit="${n.id}">Editar</button>
       <button class="btn ghost" data-copy="${n.id}">Copiar</button>
@@ -220,34 +244,33 @@ function openDetail(n){
 $("#addBtn").onclick=()=>openEditor(null);
 $("#cancelEdit").onclick=()=>$("#editOverlay").classList.remove("open");
 $("#colorRow").onclick=(e)=>{ const s=e.target.closest("[data-c]"); if(!s)return; pickedColor=s.dataset.c; [...$("#colorRow").children].forEach(x=>x.classList.toggle("sel",x.dataset.c===pickedColor)); };
-$("#saveEdit").onclick=()=>{
+$("#saveEdit").onclick=async ()=>{
   const title=$("#titleInput").value.trim();
   const body=$("#bodyInput").value.trim();
   const tags=$("#tagsInput").value.trim();
   if(!body && !title){ toast("Escribí algo primero"); return; }
   if(editingId){
-    const n=notes.find(x=>x.id===editingId);
-    if(n){ n.title=title; n.body=body; n.tags=tags; n.color=pickedColor; }
+    await apiUpdate(editingId, { title, body, tags, color:pickedColor });
   }else{
-    notes.unshift({ id:Date.now()+"-"+Math.random().toString(36).slice(2,6), title, body, tags, color:pickedColor, created:Date.now() });
+    await apiCreate({ title, body, tags, color:pickedColor });
   }
-  save(); render();
+  await loadNotes(); render();
   $("#editOverlay").classList.remove("open");
   toast(editingId?"Nota actualizada ✓":"Clavada en el corcho ✓");
   editingId=null;
 };
 $("#search").oninput=render;
-$("#board").onclick=(e)=>{
+$("#board").onclick=async (e)=>{
   const del=e.target.closest("[data-del]");
-  if(del){ e.stopPropagation(); if(confirm("¿Sacar esta nota del corcho?")){ notes=notes.filter(n=>n.id!==del.dataset.del); save(); render(); } return; }
+  if(del){ e.stopPropagation(); if(confirm("¿Sacar esta nota del corcho?")){ await apiDelete(del.dataset.del); await loadNotes(); render(); } return; }
   const card=e.target.closest(".card");
   if(card){ const n=notes.find(x=>x.id===card.dataset.id); if(n) openDetail(n); }
 };
-$("#detailOverlay").onclick=(e)=>{
+$("#detailOverlay").onclick=async (e)=>{
   if(e.target.id==="detailOverlay"||e.target.hasAttribute("data-close")){ $("#detailOverlay").classList.remove("open"); return; }
   const ed=e.target.closest("[data-edit]"); if(ed){ const n=notes.find(x=>x.id===ed.dataset.edit); $("#detailOverlay").classList.remove("open"); openEditor(n); return; }
   const cp=e.target.closest("[data-copy]"); if(cp){ const n=notes.find(x=>x.id===cp.dataset.copy); navigator.clipboard.writeText((n.title?n.title+"\n\n":"")+n.body); toast("Copiado"); return; }
-  const df=e.target.closest("[data-delfull]"); if(df){ if(confirm("¿Eliminar esta nota?")){ notes=notes.filter(n=>n.id!==df.dataset.delfull); save(); render(); $("#detailOverlay").classList.remove("open"); } }
+  const df=e.target.closest("[data-delfull]"); if(df){ if(confirm("¿Eliminar esta nota?")){ await apiDelete(df.dataset.delfull); await loadNotes(); render(); $("#detailOverlay").classList.remove("open"); } }
 };
 $("#editOverlay").onclick=(e)=>{ if(e.target.id==="editOverlay") $("#editOverlay").classList.remove("open"); };
 $("#exportBtn").onclick=()=>{
@@ -261,7 +284,16 @@ $("#exportBtn").oncontextmenu=(e)=>{ e.preventDefault(); $("#importFile").click(
 $("#importFile").onchange=(e)=>{
   const f=e.target.files[0]; if(!f)return;
   const r=new FileReader();
-  r.onload=()=>{ try{ const d=JSON.parse(r.result); if(Array.isArray(d)){ notes=d.concat(notes); save(); render(); toast("Backup importado"); } }catch(err){ toast("Archivo inválido"); } };
+  r.onload=async ()=>{
+    try{
+      const d=JSON.parse(r.result);
+      if(Array.isArray(d)){
+        for(const n of d){ await apiCreate({ title:n.title||"", body:n.body||"", tags:n.tags||"", color:n.color||COLORS[0] }); }
+        await loadNotes(); render();
+        toast("Backup importado");
+      }
+    }catch(err){ toast("Archivo inválido"); }
+  };
   r.readAsText(f);
 };
 document.addEventListener("keydown",e=>{
@@ -269,7 +301,12 @@ document.addEventListener("keydown",e=>{
   if((e.ctrlKey||e.metaKey)&&e.key==="Enter"&&$("#editOverlay").classList.contains("open")){ $("#saveEdit").click(); }
 });
 
-render();
+setInterval(async ()=>{
+  if(anyOverlayOpen()) return;
+  try{ await loadNotes(); render(); }catch(e){}
+}, 15000);
+
+loadNotes().then(render);
 </script>
 </body>
 </html>

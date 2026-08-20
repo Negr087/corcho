@@ -1,0 +1,19 @@
+{
+  "name": "corcho",
+  "version": "1.0.0",
+  "description": "Corcho de notas con bot de Telegram (texto y audio) y transcripcion local",
+  "private": true,
+  "type": "commonjs",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node --experimental-sqlite server/index.js",
+    "dev": "node --experimental-sqlite --watch server/index.js"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.4.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "ffmpeg-static": "^5.2.0",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}

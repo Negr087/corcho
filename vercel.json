@@ -1,0 +1,9 @@
+{
+  "redirects": [
+    {
+      "source": "/(.*)",
+      "destination": "https://corcho.sebadev.com.ar/$1",
+      "permanent": true
+    }
+  ]
+}
