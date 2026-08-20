@@ -19,18 +19,19 @@
     --hand:"Caveat",cursive;
   }
   *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
   body{
     font-family:var(--sans); color:var(--ink);
     background:
       radial-gradient(circle at 20% 20%, rgba(255,255,255,.10), transparent 40%),
       repeating-radial-gradient(circle at 50% 50%, rgba(90,60,30,.05) 0 2px, transparent 2px 4px),
       var(--cork);
-    min-height:100vh;
+    height:100%; display:flex; flex-direction:column; overflow:hidden;
   }
   header{
-    display:flex; align-items:center; gap:20px; flex-wrap:wrap;
+    display:flex; align-items:center; gap:20px; flex-wrap:wrap; flex-shrink:0;
     padding:22px 30px; background:rgba(43,36,28,.10); backdrop-filter:blur(4px);
-    border-bottom:1px solid rgba(43,36,28,.14); position:sticky; top:0; z-index:20;
+    border-bottom:1px solid rgba(43,36,28,.14); position:relative; z-index:20;
   }
   .brand{display:flex; flex-direction:column; line-height:1}
   .brand h1{font-family:var(--serif); font-weight:700; font-size:30px; color:var(--ink); letter-spacing:.01em}
@@ -51,18 +52,33 @@
   .btn:hover{transform:translateY(-1px)}
   .btn.ghost{background:var(--paper); color:var(--ink); box-shadow:rgba(70,55,30,.06) 0 2px 10px}
   .btn.accent{background:var(--accent)}
-  main{padding:34px 30px 80px}
-  .count{font-family:var(--hand); font-size:19px; color:rgba(43,36,28,.7); margin-bottom:18px}
-  .board{ display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:26px; align-items:start; }
-  .empty{grid-column:1/-1; text-align:center; padding:80px 20px; color:rgba(43,36,28,.65)}
+  main{position:relative; flex:1; overflow:hidden}
+  .count{
+    position:absolute; top:16px; left:20px; z-index:10; pointer-events:none;
+    font-family:var(--hand); font-size:18px; color:var(--ink);
+    background:rgba(246,242,234,.85); padding:3px 14px; border-radius:999px;
+  }
+  .canvas-viewport{position:absolute; inset:0; overflow:hidden; cursor:grab; touch-action:none}
+  .canvas-viewport.panning{cursor:grabbing}
+  .canvas-world{position:absolute; top:0; left:0; width:0; height:0}
+  .empty{position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:20px; color:rgba(43,36,28,.65); pointer-events:none}
   .empty h2{font-family:var(--serif); font-size:34px; margin-bottom:8px; color:var(--ink)}
   .empty p{font-size:15px; max-width:420px; margin:0 auto}
-  .card{
-    position:relative; border-radius:10px; padding:20px 18px 16px;
-    box-shadow:rgba(70,52,28,.20) 0 14px 34px, rgba(70,55,30,.10) 0 2px 8px;
-    cursor:pointer; transition:transform .18s, box-shadow .18s;
+  .canvas-controls{
+    position:absolute; bottom:20px; right:20px; z-index:15; display:flex; align-items:center; gap:6px;
+    background:var(--paper); border-radius:999px; padding:6px; box-shadow:rgba(70,55,30,.18) 0 4px 16px;
   }
-  .card:hover{transform:translateY(-4px) rotate(0deg)!important; box-shadow:rgba(70,52,28,.28) 0 22px 50px}
+  .canvas-controls button{width:30px; height:30px; border-radius:50%; background:var(--ink); color:var(--paper); font-size:16px; display:grid; place-items:center}
+  .canvas-controls button:hover{background:var(--accent-dk)}
+  .canvas-controls .zoom-label{font-size:12px; color:var(--mut); min-width:36px; text-align:center}
+  .canvas-controls .center-btn{width:auto; padding:0 14px; border-radius:999px; font-size:12px; font-weight:600}
+  .card{
+    position:absolute; width:240px; border-radius:10px; padding:20px 18px 16px;
+    box-shadow:rgba(70,52,28,.20) 0 14px 34px, rgba(70,55,30,.10) 0 2px 8px;
+    cursor:grab; transition:box-shadow .18s; touch-action:none; user-select:none;
+  }
+  .card:hover{box-shadow:rgba(70,52,28,.28) 0 22px 50px}
+  .card.dragging{cursor:grabbing; z-index:50; box-shadow:rgba(70,52,28,.35) 0 26px 60px}
   .pin{
     position:absolute; top:-9px; left:50%; transform:translateX(-50%);
     width:18px; height:18px; border-radius:50%;
@@ -95,7 +111,7 @@
   }
   textarea{min-height:200px; resize:vertical; line-height:1.55}
   textarea:focus,.field:focus{border-color:var(--accent)}
-  .swatchrow{display:flex; gap:8px; margin-top:6px}
+  .swatchrow{display:flex; gap:8px; margin-top:6px; flex-wrap:wrap}
   .swatchrow span{width:26px; height:26px; border-radius:50%; cursor:pointer; border:2px solid transparent; transition:transform .12s}
   .swatchrow span:hover{transform:scale(1.12)}
   .swatchrow span.sel{border-color:var(--ink)}
@@ -128,7 +144,19 @@
 
 <main>
   <div class="count" id="count"></div>
-  <div class="board" id="board"></div>
+  <div class="canvas-viewport" id="viewport">
+    <div class="canvas-world" id="world"></div>
+  </div>
+  <div class="empty" id="emptyState" style="display:none">
+    <h2>El corcho está vacío</h2>
+    <p>Tocá <b>+ Nueva nota</b>, escribile al bot de Telegram, o mandale un audio. Queda clavado acá.</p>
+  </div>
+  <div class="canvas-controls">
+    <button id="zoomOut" title="Alejar">−</button>
+    <span class="zoom-label" id="zoomLabel">100%</span>
+    <button id="zoomIn" title="Acercar">+</button>
+    <button class="center-btn" id="centerBtn" title="Centrar vista">Centrar</button>
+  </div>
 </main>
 
 <div class="overlay" id="editOverlay">
@@ -158,10 +186,48 @@
 
 <script>
 const $ = s => document.querySelector(s);
-const COLORS = ["#F4EDDC","#ECD3CD","#CFD3BD","#CFC6E0","#F7C99B","#F6F2EA"];
+const COLORS = [
+  "#F4EDDC","#ECD3CD","#CFD3BD","#CFC6E0","#F7C99B","#F6F2EA",
+  "#BFD8D2","#F5B8B0","#FFE29A","#B8CDE0","#D9B8D4","#C9B79C","#A8C3A0","#E8A87C"
+];
 let notes = [];
 let editingId = null;
 let pickedColor = COLORS[0];
+let pendingPos = null;
+
+// --- estado del lienzo (pan/zoom) ---
+let pan = { x: 0, y: 0 };
+let zoom = 1;
+const MIN_ZOOM = 0.2, MAX_ZOOM = 2.5;
+let isPanning = false, panStart = null;
+let interacting = false;
+
+function applyTransform(){
+  $("#world").style.transform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
+  $("#zoomLabel").textContent = Math.round(zoom * 100) + "%";
+}
+function screenToWorld(sx, sy){ return { x: (sx - pan.x) / zoom, y: (sy - pan.y) / zoom }; }
+function setZoomAt(cx, cy, newZoom){
+  newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, newZoom));
+  const pt = screenToWorld(cx, cy);
+  zoom = newZoom;
+  pan.x = cx - pt.x * zoom;
+  pan.y = cy - pt.y * zoom;
+  applyTransform();
+}
+function fitAll(){
+  const rect = $("#viewport").getBoundingClientRect();
+  if(!notes.length){ zoom = 1; pan.x = rect.width/2; pan.y = rect.height/2; applyTransform(); return; }
+  const xs = notes.map(n=>n.x ?? 0), ys = notes.map(n=>n.y ?? 0);
+  const minX = Math.min(...xs) - 150, maxX = Math.max(...xs) + 150;
+  const minY = Math.min(...ys) - 150, maxY = Math.max(...ys) + 150;
+  const w = Math.max(1, maxX - minX), h = Math.max(1, maxY - minY);
+  zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.min(rect.width / w, rect.height / h)));
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  pan.x = rect.width / 2 - cx * zoom;
+  pan.y = rect.height / 2 - cy * zoom;
+  applyTransform();
+}
 
 async function loadNotes(){
   const r = await fetch("/api/notes");
@@ -177,6 +243,11 @@ async function apiUpdate(id, note){
 }
 async function apiDelete(id){
   await fetch("/api/notes/"+encodeURIComponent(id), { method:"DELETE" });
+}
+async function apiPosition(id, x, y){
+  await fetch("/api/notes/"+encodeURIComponent(id)+"/position", {
+    method:"PATCH", headers:{"Content-Type":"application/json"}, body:JSON.stringify({x, y})
+  }).catch(()=>{});
 }
 
 function toast(m){ const t=$("#toast"); t.textContent=m; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),1600); }
@@ -194,29 +265,105 @@ function anyOverlayOpen(){
   return $("#editOverlay").classList.contains("open") || $("#detailOverlay").classList.contains("open");
 }
 
-function render(){
-  const q=$("#search").value.trim().toLowerCase();
-  const list=notes.filter(n=>!q || (n.title+" "+n.body+" "+n.tags).toLowerCase().includes(q));
-  $("#count").textContent = notes.length ? `${notes.length} nota${notes.length>1?"s":""}`+(q?` · ${list.length} coinciden`:"") : "";
-  const board=$("#board");
-  if(!notes.length){
-    board.innerHTML=`<div class="empty"><h2>El corcho está vacío</h2><p>Tocá <b>+ Nueva nota</b>, escribile al bot de Telegram, o mandale un audio. Queda clavado acá.</p></div>`;
-    return;
+function createCardEl(n){
+  const el = document.createElement("div");
+  el.className = "card";
+  el.dataset.id = n.id;
+  el.style.background = n.color || COLORS[0];
+  el.style.left = (n.x ?? 0) + "px";
+  el.style.top = (n.y ?? 0) + "px";
+  el.style.transform = `translate(-50%,-50%) rotate(${rot(n.id)}deg)`;
+  el.innerHTML = `
+    <div class="pin"></div>
+    <button class="del" data-del="${n.id}" title="Sacar del corcho">×</button>
+    ${n.title?`<h3>${esc(n.title)}</h3>`:""}
+    <div class="body">${esc(n.body)}</div>
+    ${n.tags?`<div class="tags">${esc(n.tags)}</div>`:""}
+    <div class="date">${srcBadge(n)}${fdate(n.created)}</div>
+  `;
+  el.addEventListener("pointerdown", (e) => onCardPointerDown(e, n, el));
+  return el;
+}
+
+function onCardPointerDown(e, note, el){
+  if (e.target.closest(".del")) return;
+  if (e.pointerType === "mouse" && e.button !== 0) return;
+  e.stopPropagation();
+  const startX = e.clientX, startY = e.clientY;
+  const startLeft = note.x ?? 0, startTop = note.y ?? 0;
+  let moved = false;
+  interacting = true;
+  el.setPointerCapture(e.pointerId);
+
+  function onMove(ev){
+    const dx = (ev.clientX - startX) / zoom;
+    const dy = (ev.clientY - startY) / zoom;
+    if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) > 4){
+      moved = true;
+      el.classList.add("dragging");
+    }
+    if (moved){
+      el.style.left = (startLeft + dx) + "px";
+      el.style.top = (startTop + dy) + "px";
+    }
   }
-  board.innerHTML=list.map(n=>`
-    <div class="card" style="background:${n.color||'#F4EDDC'}; transform:rotate(${rot(n.id)}deg)" data-id="${n.id}">
-      <div class="pin"></div>
-      <button class="del" data-del="${n.id}" title="Sacar del corcho">×</button>
-      ${n.title?`<h3>${esc(n.title)}</h3>`:""}
-      <div class="body">${esc(n.body)}</div>
-      ${n.tags?`<div class="tags">${esc(n.tags)}</div>`:""}
-      <div class="date">${srcBadge(n)}${fdate(n.created)}</div>
-    </div>`).join("");
+  function onUp(ev){
+    el.removeEventListener("pointermove", onMove);
+    el.removeEventListener("pointerup", onUp);
+    el.removeEventListener("pointercancel", onUp);
+    el.classList.remove("dragging");
+    interacting = false;
+    if (moved){
+      const dx = (ev.clientX - startX) / zoom;
+      const dy = (ev.clientY - startY) / zoom;
+      const newX = Math.round(startLeft + dx), newY = Math.round(startTop + dy);
+      note.x = newX; note.y = newY;
+      apiPosition(note.id, newX, newY);
+    } else {
+      openDetail(note);
+    }
+  }
+  el.addEventListener("pointermove", onMove);
+  el.addEventListener("pointerup", onUp);
+  el.addEventListener("pointercancel", onUp);
+}
+
+function render(){
+  const world = $("#world");
+  world.innerHTML = "";
+  if (!notes.length){
+    $("#emptyState").style.display = "flex";
+  } else {
+    $("#emptyState").style.display = "none";
+    notes.forEach(n => world.appendChild(createCardEl(n)));
+  }
+  applySearchFilter();
+}
+
+function applySearchFilter(){
+  const q = $("#search").value.trim().toLowerCase();
+  const cards = $("#world").querySelectorAll(".card");
+  let matches = 0;
+  cards.forEach(el => {
+    const n = notes.find(x => x.id === el.dataset.id);
+    const isMatch = !n || !q || (n.title+" "+n.body+" "+n.tags).toLowerCase().includes(q);
+    el.style.opacity = isMatch ? "1" : "0.2";
+    el.style.pointerEvents = isMatch ? "auto" : "none";
+    if (isMatch) matches++;
+  });
+  $("#count").textContent = notes.length
+    ? `${notes.length} nota${notes.length>1?"s":""}` + (q ? ` · ${matches} coinciden` : "")
+    : "";
 }
 
 function openEditor(note){
   editingId = note ? note.id : null;
   pickedColor = note ? (note.color||COLORS[0]) : COLORS[0];
+  if (!note){
+    const rect = $("#viewport").getBoundingClientRect();
+    const center = screenToWorld(rect.width/2, rect.height/2);
+    pendingPos = { x: Math.round(center.x + (Math.random()-0.5)*80), y: Math.round(center.y + (Math.random()-0.5)*80) };
+  }
   $("#editTitle").textContent = note ? "Editar nota" : "Nueva nota";
   $("#titleInput").value = note ? note.title : "";
   $("#bodyInput").value = note ? note.body : "";
@@ -252,20 +399,25 @@ $("#saveEdit").onclick=async ()=>{
   if(editingId){
     await apiUpdate(editingId, { title, body, tags, color:pickedColor });
   }else{
-    await apiCreate({ title, body, tags, color:pickedColor });
+    await apiCreate({ title, body, tags, color:pickedColor, x: pendingPos.x, y: pendingPos.y });
   }
   await loadNotes(); render();
   $("#editOverlay").classList.remove("open");
   toast(editingId?"Nota actualizada ✓":"Clavada en el corcho ✓");
   editingId=null;
 };
-$("#search").oninput=render;
-$("#board").onclick=async (e)=>{
-  const del=e.target.closest("[data-del]");
-  if(del){ e.stopPropagation(); if(confirm("¿Sacar esta nota del corcho?")){ await apiDelete(del.dataset.del); await loadNotes(); render(); } return; }
-  const card=e.target.closest(".card");
-  if(card){ const n=notes.find(x=>x.id===card.dataset.id); if(n) openDetail(n); }
-};
+$("#search").oninput = applySearchFilter;
+$("#world").addEventListener("click", async (e) => {
+  const del = e.target.closest("[data-del]");
+  if (del){
+    e.stopPropagation();
+    if (confirm("¿Sacar esta nota del corcho?")){
+      await apiDelete(del.dataset.del);
+      notes = notes.filter(n => n.id !== del.dataset.del);
+      render();
+    }
+  }
+});
 $("#detailOverlay").onclick=async (e)=>{
   if(e.target.id==="detailOverlay"||e.target.hasAttribute("data-close")){ $("#detailOverlay").classList.remove("open"); return; }
   const ed=e.target.closest("[data-edit]"); if(ed){ const n=notes.find(x=>x.id===ed.dataset.edit); $("#detailOverlay").classList.remove("open"); openEditor(n); return; }
@@ -288,7 +440,7 @@ $("#importFile").onchange=(e)=>{
     try{
       const d=JSON.parse(r.result);
       if(Array.isArray(d)){
-        for(const n of d){ await apiCreate({ title:n.title||"", body:n.body||"", tags:n.tags||"", color:n.color||COLORS[0] }); }
+        for(const n of d){ await apiCreate({ title:n.title||"", body:n.body||"", tags:n.tags||"", color:n.color||COLORS[0], x:n.x, y:n.y }); }
         await loadNotes(); render();
         toast("Backup importado");
       }
@@ -301,12 +453,46 @@ document.addEventListener("keydown",e=>{
   if((e.ctrlKey||e.metaKey)&&e.key==="Enter"&&$("#editOverlay").classList.contains("open")){ $("#saveEdit").click(); }
 });
 
+// --- pan y zoom del lienzo ---
+const viewport = $("#viewport");
+viewport.addEventListener("pointerdown", (e) => {
+  if (e.target.closest(".card")) return;
+  if (e.pointerType === "mouse" && e.button !== 0) return;
+  isPanning = true; interacting = true;
+  viewport.classList.add("panning");
+  viewport.setPointerCapture(e.pointerId);
+  panStart = { clientX:e.clientX, clientY:e.clientY, panX:pan.x, panY:pan.y };
+});
+viewport.addEventListener("pointermove", (e) => {
+  if (!isPanning || !panStart) return;
+  pan.x = panStart.panX + (e.clientX - panStart.clientX);
+  pan.y = panStart.panY + (e.clientY - panStart.clientY);
+  applyTransform();
+});
+function endPan(){ if(isPanning){ isPanning=false; interacting=false; viewport.classList.remove("panning"); panStart=null; } }
+viewport.addEventListener("pointerup", endPan);
+viewport.addEventListener("pointercancel", endPan);
+viewport.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const rect = viewport.getBoundingClientRect();
+  const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+  if (e.ctrlKey){
+    setZoomAt(cx, cy, zoom * Math.exp(-e.deltaY * 0.01));
+  } else {
+    pan.x -= e.deltaX; pan.y -= e.deltaY;
+    applyTransform();
+  }
+}, { passive:false });
+$("#zoomIn").onclick = () => { const r=viewport.getBoundingClientRect(); setZoomAt(r.width/2, r.height/2, zoom*1.25); };
+$("#zoomOut").onclick = () => { const r=viewport.getBoundingClientRect(); setZoomAt(r.width/2, r.height/2, zoom/1.25); };
+$("#centerBtn").onclick = () => fitAll();
+
 setInterval(async ()=>{
-  if(anyOverlayOpen()) return;
+  if(anyOverlayOpen() || interacting) return;
   try{ await loadNotes(); render(); }catch(e){}
 }, 15000);
 
-loadNotes().then(render);
+loadNotes().then(() => { fitAll(); render(); });
 </script>
 </body>
 </html>
