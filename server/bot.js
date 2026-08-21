@@ -47,31 +47,46 @@ function buildWeeklySummary(owner) {
   return msg;
 }
 
+// Mapea id numerico de Telegram -> email (dueño del corcho al que van sus
+// notas). Junta el usuario "clasico" (TELEGRAM_ALLOWED_USER_ID + OWNER_EMAIL)
+// con la lista opcional TELEGRAM_OWNERS="id1:email1,id2:email2" para poder
+// sumar mas gente sin tocar la config existente.
+function buildOwnersMap() {
+  const map = new Map();
+  if (process.env.TELEGRAM_ALLOWED_USER_ID && process.env.OWNER_EMAIL) {
+    map.set(String(process.env.TELEGRAM_ALLOWED_USER_ID), process.env.OWNER_EMAIL);
+  }
+  if (process.env.TELEGRAM_OWNERS) {
+    for (const pair of process.env.TELEGRAM_OWNERS.split(",")) {
+      const [id, email] = pair.split(":").map((s) => (s || "").trim());
+      if (id && email) map.set(id, email);
+    }
+  }
+  return map;
+}
+
 function startBot() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) {
     console.warn("TELEGRAM_BOT_TOKEN no configurado: el bot de Telegram no se inicia.");
     return null;
   }
-  const allowedId = process.env.TELEGRAM_ALLOWED_USER_ID
-    ? String(process.env.TELEGRAM_ALLOWED_USER_ID)
-    : null;
-  if (!allowedId) {
+
+  const owners = buildOwnersMap();
+  if (!owners.size) {
     console.warn(
-      "TELEGRAM_ALLOWED_USER_ID no configurado: cualquiera que le escriba al bot va a poder agregar notas."
+      "No hay usuarios configurados (TELEGRAM_ALLOWED_USER_ID+OWNER_EMAIL o TELEGRAM_OWNERS): nadie va a poder usar el bot."
     );
-  }
-  const owner = process.env.OWNER_EMAIL;
-  if (!owner) {
-    console.warn("OWNER_EMAIL no configurado: las notas del bot no van a aparecer en ningun corcho web.");
   }
 
   const bot = new TelegramBot(token, { polling: true });
-  let lastCreatedId = null;
+  const lastCreatedByUser = new Map();
 
   function isAllowed(msg) {
-    if (!allowedId) return true;
-    return String(msg.from.id) === allowedId;
+    return owners.has(String(msg.from.id));
+  }
+  function ownerFor(msg) {
+    return owners.get(String(msg.from.id));
   }
 
   bot.onText(/^\/start/, (msg) => {
@@ -86,7 +101,7 @@ function startBot() {
 
   bot.onText(/^\/listar/, (msg) => {
     if (!isAllowed(msg)) return;
-    const notes = listNotes(owner).slice(0, 5);
+    const notes = listNotes(ownerFor(msg)).slice(0, 5);
     if (!notes.length) {
       bot.sendMessage(msg.chat.id, "El corcho esta vacio.");
       return;
@@ -97,13 +112,15 @@ function startBot() {
 
   bot.onText(/^\/borrar/, (msg) => {
     if (!isAllowed(msg)) return;
-    if (!lastCreatedId) {
+    const userId = String(msg.from.id);
+    const lastId = lastCreatedByUser.get(userId);
+    if (!lastId) {
       bot.sendMessage(msg.chat.id, "No hay nada reciente para borrar en esta sesion.");
       return;
     }
-    deleteNote(lastCreatedId, owner);
+    deleteNote(lastId, ownerFor(msg));
     bot.sendMessage(msg.chat.id, "Borrada.");
-    lastCreatedId = null;
+    lastCreatedByUser.delete(userId);
   });
 
   bot.on("message", async (msg) => {
@@ -113,6 +130,8 @@ function startBot() {
       }
       return;
     }
+    const owner = ownerFor(msg);
+    const userId = String(msg.from.id);
 
     if (msg.text && !msg.text.startsWith("/")) {
       if (msg.reply_to_message) {
@@ -126,7 +145,7 @@ function startBot() {
       }
       const { title, body, tags } = deriveNote(msg.text);
       const note = createNote({ title, body, tags, source: "telegram", owner });
-      lastCreatedId = note.id;
+      lastCreatedByUser.set(userId, note.id);
       const sent = await bot.sendMessage(msg.chat.id, `Clavada en el corcho ✓${tags ? `\nEtiquetas: ${tags}` : ""}`);
       setTelegramMessageRef(note.id, msg.chat.id, sent.message_id);
       return;
@@ -148,7 +167,7 @@ function startBot() {
         }
         const { title, body, tags } = deriveNote(text);
         const note = createNote({ title, body, tags, source: "telegram-audio", owner });
-        lastCreatedId = note.id;
+        lastCreatedByUser.set(userId, note.id);
         const sent = await bot.sendMessage(
           msg.chat.id,
           `Clavada en el corcho ✓${tags ? `\nEtiquetas: ${tags}` : ""}\n\n"${text}"`
@@ -194,7 +213,7 @@ function startBot() {
           owner,
           imagePath: imageFilename,
         });
-        lastCreatedId = note.id;
+        lastCreatedByUser.set(userId, note.id);
         const sent = await bot.sendMessage(
           msg.chat.id,
           `Clavada en el corcho ✓${ocrText ? `\n\nTexto detectado:\n"${ocrText}"` : ""}`
@@ -211,8 +230,8 @@ function startBot() {
 
   bot.on("polling_error", (err) => console.error("Telegram polling error:", err.message));
 
-  // --- resumen semanal ---
-  if (owner && allowedId) {
+  // --- resumen semanal, uno por cada usuario configurado ---
+  if (owners.size) {
     const targetDay = process.env.WEEKLY_SUMMARY_DAY !== undefined ? Number(process.env.WEEKLY_SUMMARY_DAY) : 0; // 0 = domingo
     const targetHour = process.env.WEEKLY_SUMMARY_HOUR !== undefined ? Number(process.env.WEEKLY_SUMMARY_HOUR) : 20;
     let lastSentWeekKey = null;
@@ -226,14 +245,16 @@ function startBot() {
       const key = weekKey(now);
       if (now.getDay() === targetDay && now.getHours() === targetHour && lastSentWeekKey !== key) {
         lastSentWeekKey = key;
-        bot.sendMessage(allowedId, buildWeeklySummary(owner)).catch((err) =>
-          console.error("Error mandando resumen semanal:", err.message)
-        );
+        for (const [telegramId, ownerEmail] of owners) {
+          bot
+            .sendMessage(telegramId, buildWeeklySummary(ownerEmail))
+            .catch((err) => console.error("Error mandando resumen semanal:", err.message));
+        }
       }
     }, 60 * 60 * 1000);
   }
 
-  console.log("Bot de Telegram iniciado (polling).");
+  console.log(`Bot de Telegram iniciado (polling). Usuarios configurados: ${owners.size}.`);
   return bot;
 }
 
