@@ -17,6 +17,7 @@
     "ffmpeg-static": "^5.2.0",
     "node-telegram-bot-api": "^0.66.0",
     "passport": "^0.7.0",
-    "passport-google-oauth20": "^2.0.0"
+    "passport-google-oauth20": "^2.0.0",
+    "tesseract.js": "^7.0.0"
   }
 }

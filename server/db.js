@@ -5,6 +5,9 @@ const fs = require("fs");
 const dataDir = path.join(__dirname, "..", "data");
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
+const IMAGES_DIR = path.join(dataDir, "images");
+if (!fs.existsSync(IMAGES_DIR)) fs.mkdirSync(IMAGES_DIR, { recursive: true });
+
 const db = new DatabaseSync(path.join(dataDir, "corcho.db"));
 
 db.exec(`
@@ -18,7 +21,11 @@ db.exec(`
     created INTEGER NOT NULL,
     x REAL,
     y REAL,
-    owner TEXT
+    owner TEXT,
+    done INTEGER DEFAULT 0,
+    telegram_chat_id TEXT,
+    telegram_message_id TEXT,
+    image_path TEXT
   )
 `);
 
@@ -26,6 +33,11 @@ const existingColumns = db.prepare("PRAGMA table_info(notes)").all().map((c) => 
 if (!existingColumns.includes("x")) db.exec("ALTER TABLE notes ADD COLUMN x REAL");
 if (!existingColumns.includes("y")) db.exec("ALTER TABLE notes ADD COLUMN y REAL");
 if (!existingColumns.includes("owner")) db.exec("ALTER TABLE notes ADD COLUMN owner TEXT");
+if (!existingColumns.includes("done")) db.exec("ALTER TABLE notes ADD COLUMN done INTEGER DEFAULT 0");
+if (!existingColumns.includes("telegram_chat_id")) db.exec("ALTER TABLE notes ADD COLUMN telegram_chat_id TEXT");
+if (!existingColumns.includes("telegram_message_id"))
+  db.exec("ALTER TABLE notes ADD COLUMN telegram_message_id TEXT");
+if (!existingColumns.includes("image_path")) db.exec("ALTER TABLE notes ADD COLUMN image_path TEXT");
 
 for (const row of db.prepare("SELECT id FROM notes WHERE x IS NULL OR y IS NULL").all()) {
   const pos = scatterPosition();
@@ -64,14 +76,41 @@ function listNotes(owner) {
   return db.prepare("SELECT * FROM notes WHERE owner = ? ORDER BY created DESC").all(owner);
 }
 
-function createNote({ title = "", body = "", tags = "", color = "#F4EDDC", source = "web", x, y, owner }) {
+function createNote({
+  title = "",
+  body = "",
+  tags = "",
+  color = "#F4EDDC",
+  source = "web",
+  x,
+  y,
+  owner,
+  telegramChatId,
+  telegramMessageId,
+  imagePath,
+}) {
   const id = genId();
   const created = Date.now();
   const pos = x !== undefined && y !== undefined ? { x, y } : scatterPosition(owner);
   db.prepare(
-    "INSERT INTO notes (id, title, body, tags, color, source, created, x, y, owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-  ).run(id, title, body, tags, color, source, created, pos.x, pos.y, owner);
-  return { id, title, body, tags, color, source, created, x: pos.x, y: pos.y, owner };
+    `INSERT INTO notes (id, title, body, tags, color, source, created, x, y, owner, telegram_chat_id, telegram_message_id, image_path)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    title,
+    body,
+    tags,
+    color,
+    source,
+    created,
+    pos.x,
+    pos.y,
+    owner,
+    telegramChatId || null,
+    telegramMessageId || null,
+    imagePath || null
+  );
+  return db.prepare("SELECT * FROM notes WHERE id = ?").get(id);
 }
 
 function updateNote(id, owner, { title, body, tags, color, x, y }) {
@@ -103,9 +142,52 @@ function updateNotePosition(id, owner, x, y) {
   return res.changes > 0;
 }
 
-function deleteNote(id, owner) {
-  const res = db.prepare("DELETE FROM notes WHERE id = ? AND owner = ?").run(id, owner);
+function updateNoteDone(id, owner, done) {
+  const res = db.prepare("UPDATE notes SET done = ? WHERE id = ? AND owner = ?").run(done ? 1 : 0, id, owner);
   return res.changes > 0;
 }
 
-module.exports = { listNotes, createNote, updateNote, updateNotePosition, deleteNote };
+function setTelegramMessageRef(id, chatId, messageId) {
+  db.prepare("UPDATE notes SET telegram_chat_id = ?, telegram_message_id = ? WHERE id = ?").run(
+    String(chatId),
+    String(messageId),
+    id
+  );
+}
+
+function findNoteByTelegramMessage(owner, chatId, messageId) {
+  return db
+    .prepare("SELECT * FROM notes WHERE owner = ? AND telegram_chat_id = ? AND telegram_message_id = ?")
+    .get(owner, String(chatId), String(messageId));
+}
+
+function updateNoteBody(id, owner, { title, body, tags }) {
+  const existing = db.prepare("SELECT * FROM notes WHERE id = ? AND owner = ?").get(id, owner);
+  if (!existing) return null;
+  db.prepare("UPDATE notes SET title = ?, body = ?, tags = ? WHERE id = ?").run(
+    title !== undefined ? title : existing.title,
+    body !== undefined ? body : existing.body,
+    tags !== undefined ? tags : existing.tags,
+    id
+  );
+  return db.prepare("SELECT * FROM notes WHERE id = ?").get(id);
+}
+
+function deleteNote(id, owner) {
+  const existing = db.prepare("SELECT image_path FROM notes WHERE id = ? AND owner = ?").get(id, owner);
+  const res = db.prepare("DELETE FROM notes WHERE id = ? AND owner = ?").run(id, owner);
+  return res.changes > 0 ? existing : null;
+}
+
+module.exports = {
+  IMAGES_DIR,
+  listNotes,
+  createNote,
+  updateNote,
+  updateNotePosition,
+  updateNoteDone,
+  updateNoteBody,
+  setTelegramMessageRef,
+  findNoteByTelegramMessage,
+  deleteNote,
+};

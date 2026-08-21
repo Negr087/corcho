@@ -4,8 +4,14 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>corcho — mis notas</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#2B241C">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="corcho">
 <link rel="icon" type="image/png" href="/logocorcho.png">
-<link rel="apple-touch-icon" href="/logocorcho.png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;600&family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -97,6 +103,19 @@
   }
   .card:hover .del{opacity:1}
   .card .del:hover{background:rgba(43,36,28,.10); color:var(--ink)}
+  .card .check{
+    position:absolute; top:10px; left:10px; width:22px; height:22px; border-radius:50%;
+    border:2px solid rgba(43,36,28,.3); background:rgba(255,255,255,.35); cursor:pointer;
+    display:grid; place-items:center; font-size:13px; color:transparent; transition:all .15s;
+  }
+  .card .check:hover{border-color:var(--accent-dk)}
+  .card.done .check{background:var(--accent); border-color:var(--accent-dk); color:#fff}
+  .card.done{opacity:.6}
+  .card.done h3{text-decoration:line-through}
+  .card .thumb{
+    width:100%; max-height:120px; object-fit:cover; border-radius:8px; margin-bottom:10px;
+    display:block; background:rgba(43,36,28,.08);
+  }
   .overlay{position:fixed; inset:0; background:rgba(43,36,28,.5); backdrop-filter:blur(3px); z-index:40; display:none; align-items:center; justify-content:center; padding:20px}
   .overlay.open{display:flex}
   .sheet{
@@ -204,6 +223,7 @@ let notes = [];
 let editingId = null;
 let pickedColor = COLORS[0];
 let pendingPos = null;
+let lastDragUndo = null;
 
 // --- estado del lienzo (pan/zoom) ---
 let pan = { x: 0, y: 0 };
@@ -303,6 +323,11 @@ async function apiPosition(id, x, y){
     method:"PATCH", headers:{"Content-Type":"application/json"}, body:JSON.stringify({x, y})
   }).catch(()=>{});
 }
+async function apiDone(id, done){
+  await fetch("/api/notes/"+encodeURIComponent(id)+"/done", {
+    method:"PATCH", headers:{"Content-Type":"application/json"}, body:JSON.stringify({done})
+  }).catch(()=>{});
+}
 
 function toast(m){ const t=$("#toast"); t.textContent=m; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),1600); }
 function rot(id){ let h=0; for(const c of id) h=(h*31+c.charCodeAt(0))%1000; return ((h%7)-3); }
@@ -321,7 +346,7 @@ function anyOverlayOpen(){
 
 function createCardEl(n){
   const el = document.createElement("div");
-  el.className = "card";
+  el.className = "card" + (n.done ? " done" : "");
   el.dataset.id = n.id;
   el.style.background = n.color || COLORS[0];
   el.style.left = (n.x ?? 0) + "px";
@@ -330,6 +355,8 @@ function createCardEl(n){
   el.innerHTML = `
     <div class="pin"></div>
     <button class="del" data-del="${n.id}" title="Sacar del corcho">×</button>
+    <button class="check" data-done="${n.id}" title="Marcar como hecha">✓</button>
+    ${n.image_path?`<img class="thumb" src="/media/${n.id}" alt="">`:""}
     ${n.title?`<h3>${esc(n.title)}</h3>`:""}
     <div class="body">${esc(n.body)}</div>
     ${n.tags?`<div class="tags">${esc(n.tags)}</div>`:""}
@@ -340,7 +367,7 @@ function createCardEl(n){
 }
 
 function onCardPointerDown(e, note, el){
-  if (e.target.closest(".del")) return;
+  if (e.target.closest(".del") || e.target.closest(".check")) return;
   if (e.pointerType === "mouse" && e.button !== 0) return;
   e.stopPropagation();
   const startX = e.clientX, startY = e.clientY;
@@ -371,6 +398,7 @@ function onCardPointerDown(e, note, el){
       const dx = (ev.clientX - startX) / zoom;
       const dy = (ev.clientY - startY) / zoom;
       const newX = Math.round(startLeft + dx), newY = Math.round(startTop + dy);
+      lastDragUndo = { id: note.id, prevX: startLeft, prevY: startTop };
       note.x = newX; note.y = newY;
       apiPosition(note.id, newX, newY);
     } else {
@@ -410,6 +438,19 @@ function applySearchFilter(){
     : "";
 }
 
+function focusFirstMatch(){
+  const q = $("#search").value.trim().toLowerCase();
+  if (!q) return;
+  const match = notes.find(n => (n.title+" "+n.body+" "+n.tags).toLowerCase().includes(q));
+  if (!match){ toast("Sin resultados"); return; }
+  const rect = $("#viewport").getBoundingClientRect();
+  zoom = Math.max(zoom, 0.8);
+  pan.x = rect.width/2 - (match.x ?? 0) * zoom;
+  pan.y = rect.height/2 - (match.y ?? 0) * zoom;
+  applyTransform();
+  saveView();
+}
+
 function openEditor(note){
   editingId = note ? note.id : null;
   pickedColor = note ? (note.color||COLORS[0]) : COLORS[0];
@@ -429,11 +470,13 @@ function openEditor(note){
 
 function openDetail(n){
   $("#detailContent").innerHTML=`
+    ${n.image_path?`<img src="/media/${n.id}" style="width:100%;border-radius:12px;margin-bottom:14px;display:block">`:""}
     ${n.title?`<h2>${esc(n.title)}</h2>`:""}
     <div class="body-full">${linkify(n.body)}</div>
     ${n.tags?`<div style="font-family:var(--hand);font-size:18px;color:var(--accent-dk);margin-top:10px">${esc(n.tags)}</div>`:""}
     <div style="font-size:11px;color:var(--mut);margin-top:8px">${srcBadge(n)}${fdate(n.created)}</div>
     <div class="row">
+      <button class="btn ghost" data-toggledone="${n.id}">${n.done?"Marcar pendiente":"Marcar hecha"}</button>
       <button class="btn ghost" data-edit="${n.id}">Editar</button>
       <button class="btn ghost" data-copy="${n.id}">Copiar</button>
       <button class="btn ghost" data-delfull="${n.id}" style="color:#a33">Eliminar</button>
@@ -461,6 +504,7 @@ $("#saveEdit").onclick=async ()=>{
   editingId=null;
 };
 $("#search").oninput = applySearchFilter;
+$("#search").addEventListener("keydown", (e) => { if (e.key === "Enter") focusFirstMatch(); });
 $("#world").addEventListener("click", async (e) => {
   const del = e.target.closest("[data-del]");
   if (del){
@@ -470,12 +514,24 @@ $("#world").addEventListener("click", async (e) => {
       notes = notes.filter(n => n.id !== del.dataset.del);
       render();
     }
+    return;
+  }
+  const doneBtn = e.target.closest("[data-done]");
+  if (doneBtn){
+    e.stopPropagation();
+    const n = notes.find(x => x.id === doneBtn.dataset.done);
+    if (n){
+      n.done = n.done ? 0 : 1;
+      await apiDone(n.id, !!n.done);
+      render();
+    }
   }
 });
 $("#detailOverlay").onclick=async (e)=>{
   if(e.target.id==="detailOverlay"||e.target.hasAttribute("data-close")){ $("#detailOverlay").classList.remove("open"); return; }
   const ed=e.target.closest("[data-edit]"); if(ed){ const n=notes.find(x=>x.id===ed.dataset.edit); $("#detailOverlay").classList.remove("open"); openEditor(n); return; }
   const cp=e.target.closest("[data-copy]"); if(cp){ const n=notes.find(x=>x.id===cp.dataset.copy); navigator.clipboard.writeText((n.title?n.title+"\n\n":"")+n.body); toast("Copiado"); return; }
+  const td=e.target.closest("[data-toggledone]"); if(td){ const n=notes.find(x=>x.id===td.dataset.toggledone); if(n){ n.done = n.done?0:1; await apiDone(n.id, !!n.done); $("#detailOverlay").classList.remove("open"); render(); } return; }
   const df=e.target.closest("[data-delfull]"); if(df){ if(confirm("¿Eliminar esta nota?")){ await apiDelete(df.dataset.delfull); await loadNotes(); render(); $("#detailOverlay").classList.remove("open"); } }
 };
 $("#editOverlay").onclick=(e)=>{ if(e.target.id==="editOverlay") $("#editOverlay").classList.remove("open"); };
@@ -505,6 +561,13 @@ $("#importFile").onchange=(e)=>{
 document.addEventListener("keydown",e=>{
   if(e.key==="Escape"){ document.querySelectorAll(".overlay.open").forEach(o=>o.classList.remove("open")); }
   if((e.ctrlKey||e.metaKey)&&e.key==="Enter"&&$("#editOverlay").classList.contains("open")){ $("#saveEdit").click(); }
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="z"&&!anyOverlayOpen()&&lastDragUndo){
+    e.preventDefault();
+    const { id, prevX, prevY } = lastDragUndo;
+    const n = notes.find(x=>x.id===id);
+    if(n){ n.x=prevX; n.y=prevY; apiPosition(id, prevX, prevY); render(); toast("Movimiento deshecho"); }
+    lastDragUndo = null;
+  }
 });
 
 // --- pan y zoom del lienzo ---
@@ -549,6 +612,10 @@ setInterval(async ()=>{
 
 loadMe();
 loadNotes().then(() => { initView(); render(); });
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(()=>{}));
+}
 </script>
 </body>
 </html>

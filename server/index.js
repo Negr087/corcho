@@ -8,8 +8,17 @@ require("node:dns").setDefaultResultOrder("ipv4first");
 require("dotenv").config();
 const express = require("express");
 const path = require("path");
+const fs = require("fs");
 const session = require("express-session");
-const { listNotes, createNote, updateNote, updateNotePosition, deleteNote } = require("./db");
+const {
+  IMAGES_DIR,
+  listNotes,
+  createNote,
+  updateNote,
+  updateNotePosition,
+  updateNoteDone,
+  deleteNote,
+} = require("./db");
 const { startBot } = require("./bot");
 const { passport, configurePassport, ensureAuthApi, ensureAuthPage } = require("./auth");
 
@@ -87,10 +96,29 @@ app.patch("/api/notes/:id/position", ensureAuthApi, (req, res) => {
   res.status(204).end();
 });
 
-app.delete("/api/notes/:id", ensureAuthApi, (req, res) => {
-  const ok = deleteNote(req.params.id, req.user.email);
+app.patch("/api/notes/:id/done", ensureAuthApi, (req, res) => {
+  const { done } = req.body || {};
+  const ok = updateNoteDone(req.params.id, req.user.email, !!done);
   if (!ok) return res.status(404).json({ error: "no encontrada" });
   res.status(204).end();
+});
+
+app.delete("/api/notes/:id", ensureAuthApi, (req, res) => {
+  const deleted = deleteNote(req.params.id, req.user.email);
+  if (!deleted) return res.status(404).json({ error: "no encontrada" });
+  if (deleted.image_path) {
+    fs.unlink(path.join(IMAGES_DIR, deleted.image_path), () => {});
+  }
+  res.status(204).end();
+});
+
+app.get("/media/:id", ensureAuthApi, (req, res) => {
+  const notes = listNotes(req.user.email);
+  const note = notes.find((n) => n.id === req.params.id);
+  if (!note || !note.image_path) return res.status(404).end();
+  res.sendFile(path.join(IMAGES_DIR, note.image_path), (err) => {
+    if (err && !res.headersSent) res.status(404).end();
+  });
 });
 
 const PORT = process.env.PORT || 3000;
