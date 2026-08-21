@@ -21,7 +21,10 @@ function configurePassport() {
       },
       (accessToken, refreshToken, profile, done) => {
         const email = ((profile.emails && profile.emails[0] && profile.emails[0].value) || "").toLowerCase();
-        if (!email || !allowedEmails().includes(email)) {
+        const allowed = allowedEmails();
+        // Lista vacia = login abierto a cualquier cuenta de Google. Si se
+        // quiere volver a restringir, alcanza con setear ALLOWED_EMAILS.
+        if (!email || (allowed.length && !allowed.includes(email))) {
           return done(null, false);
         }
         const user = {
