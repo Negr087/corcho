@@ -25,7 +25,9 @@ db.exec(`
     done INTEGER DEFAULT 0,
     telegram_chat_id TEXT,
     telegram_message_id TEXT,
-    image_path TEXT
+    image_path TEXT,
+    remind_at INTEGER,
+    reminded INTEGER DEFAULT 0
   )
 `);
 
@@ -38,6 +40,8 @@ if (!existingColumns.includes("telegram_chat_id")) db.exec("ALTER TABLE notes AD
 if (!existingColumns.includes("telegram_message_id"))
   db.exec("ALTER TABLE notes ADD COLUMN telegram_message_id TEXT");
 if (!existingColumns.includes("image_path")) db.exec("ALTER TABLE notes ADD COLUMN image_path TEXT");
+if (!existingColumns.includes("remind_at")) db.exec("ALTER TABLE notes ADD COLUMN remind_at INTEGER");
+if (!existingColumns.includes("reminded")) db.exec("ALTER TABLE notes ADD COLUMN reminded INTEGER DEFAULT 0");
 
 for (const row of db.prepare("SELECT id FROM notes WHERE x IS NULL OR y IS NULL").all()) {
   const pos = scatterPosition();
@@ -179,6 +183,21 @@ function deleteNote(id, owner) {
   return res.changes > 0 ? existing : null;
 }
 
+function setReminder(id, owner, remindAt) {
+  const res = db
+    .prepare("UPDATE notes SET remind_at = ?, reminded = 0 WHERE id = ? AND owner = ?")
+    .run(remindAt, id, owner);
+  return res.changes > 0;
+}
+
+function getDueReminders() {
+  return db.prepare("SELECT * FROM notes WHERE remind_at IS NOT NULL AND reminded = 0 AND remind_at <= ?").all(Date.now());
+}
+
+function markReminded(id) {
+  db.prepare("UPDATE notes SET reminded = 1 WHERE id = ?").run(id);
+}
+
 module.exports = {
   IMAGES_DIR,
   listNotes,
@@ -190,4 +209,7 @@ module.exports = {
   setTelegramMessageRef,
   findNoteByTelegramMessage,
   deleteNote,
+  setReminder,
+  getDueReminders,
+  markReminded,
 };

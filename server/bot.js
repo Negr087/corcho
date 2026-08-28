@@ -11,9 +11,12 @@ const {
   updateNoteBody,
   setTelegramMessageRef,
   findNoteByTelegramMessage,
+  setReminder,
+  getDueReminders,
+  markReminded,
 } = require("./db");
 const { transcribeAudioFile } = require("./transcribe");
-const { deriveNote } = require("./noteHeuristics");
+const { deriveNote, parseReminderTime } = require("./noteHeuristics");
 
 async function ocrImage(imagePath) {
   const { createWorker } = require("tesseract.js");
@@ -95,7 +98,10 @@ function startBot() {
       msg.chat.id,
       "Hola! Mandame un texto, un audio o una foto y lo clavo en el corcho.\n\n" +
         "Respondele a un mensaje mío (reply) con texto corregido para editar esa nota.\n\n" +
-        "Comandos:\n/listar - ver las ultimas notas\n/borrar - borrar la ultima nota que agregue en esta sesion"
+        "Comandos:\n" +
+        "/listar - ver las ultimas notas\n" +
+        "/borrar - borrar la ultima nota que agregue en esta sesion\n" +
+        "/recordar <cuando> - poner un recordatorio (respondiendo a una nota, o si no a la ultima). Ej: /recordar mañana 10:00, /recordar en 2h, /recordar lunes 09:00"
     );
   });
 
@@ -121,6 +127,42 @@ function startBot() {
     deleteNote(lastId, ownerFor(msg));
     bot.sendMessage(msg.chat.id, "Borrada.");
     lastCreatedByUser.delete(userId);
+  });
+
+  bot.onText(/^\/recordar\s+(.+)/i, (msg, match) => {
+    if (!isAllowed(msg)) return;
+    const owner = ownerFor(msg);
+    const userId = String(msg.from.id);
+    const date = parseReminderTime(match[1]);
+    if (!date) {
+      bot.sendMessage(
+        msg.chat.id,
+        "No entendí la fecha. Probá con: 'mañana 10:00', 'hoy 18:30', '25/08 14:00', 'en 2h', 'en 30 min' o 'lunes 09:00'."
+      );
+      return;
+    }
+    if (date.getTime() <= Date.now()) {
+      bot.sendMessage(msg.chat.id, "Esa fecha/hora ya pasó.");
+      return;
+    }
+    let targetId = null;
+    if (msg.reply_to_message) {
+      const target = findNoteByTelegramMessage(owner, msg.chat.id, msg.reply_to_message.message_id);
+      if (target) targetId = target.id;
+    }
+    if (!targetId) targetId = lastCreatedByUser.get(userId);
+    if (!targetId) {
+      bot.sendMessage(
+        msg.chat.id,
+        "No hay una nota reciente. Respondé (reply) al mensaje de la nota que querés recordar, o mandá una nota primero."
+      );
+      return;
+    }
+    setReminder(targetId, owner, date.getTime());
+    bot.sendMessage(
+      msg.chat.id,
+      `Listo, te aviso el ${date.toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" })} ⏰`
+    );
   });
 
   bot.on("message", async (msg) => {
@@ -229,6 +271,26 @@ function startBot() {
   });
 
   bot.on("polling_error", (err) => console.error("Telegram polling error:", err.message));
+
+  // --- recordatorios ---
+  if (owners.size) {
+    const emailToTelegramId = new Map();
+    for (const [id, email] of owners) emailToTelegramId.set(email, id);
+
+    setInterval(() => {
+      for (const note of getDueReminders()) {
+        const telegramId = emailToTelegramId.get(note.owner);
+        if (!telegramId) {
+          markReminded(note.id);
+          continue;
+        }
+        bot
+          .sendMessage(telegramId, `⏰ Recordatorio: ${note.title || note.body.slice(0, 80)}`)
+          .catch((err) => console.error("Error mandando recordatorio:", err.message))
+          .finally(() => markReminded(note.id));
+      }
+    }, 60 * 1000);
+  }
 
   // --- resumen semanal, uno por cada usuario configurado ---
   if (owners.size) {

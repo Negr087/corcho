@@ -95,6 +95,7 @@
   .card .body{font-size:14px; line-height:1.5; color:var(--ink2); white-space:pre-wrap; word-break:break-word;
     display:-webkit-box; -webkit-line-clamp:7; -webkit-box-orient:vertical; overflow:hidden}
   .card .tags{margin-top:12px; font-family:var(--hand); font-size:16px; color:var(--accent-dk)}
+  .card .reminder{margin-top:8px; font-size:11.5px; font-weight:600; color:var(--accent-dk)}
   .card .date{margin-top:8px; font-size:10.5px; color:var(--mut2); letter-spacing:.04em; display:flex; align-items:center; gap:5px}
   .card .del{
     position:absolute; top:10px; right:10px; width:24px; height:24px; border-radius:50%;
@@ -199,6 +200,8 @@
     <input class="field" id="tagsInput" placeholder="ej: idea, cliente, inspiración" />
     <label>Color del papel</label>
     <div class="swatchrow" id="colorRow"></div>
+    <label>Recordatorio (opcional)</label>
+    <input class="field" type="datetime-local" id="reminderInput" />
     <div class="row">
       <button class="btn ghost" id="cancelEdit">Cancelar</button>
       <button class="btn accent" id="saveEdit">Clavar en el corcho</button>
@@ -328,6 +331,20 @@ async function apiDone(id, done){
     method:"PATCH", headers:{"Content-Type":"application/json"}, body:JSON.stringify({done})
   }).catch(()=>{});
 }
+async function apiReminder(id, remindAt){
+  await fetch("/api/notes/"+encodeURIComponent(id)+"/reminder", {
+    method:"PATCH", headers:{"Content-Type":"application/json"}, body:JSON.stringify({remindAt})
+  }).catch(()=>{});
+}
+function toDatetimeLocal(ts){
+  if(!ts) return "";
+  const d = new Date(ts);
+  const pad = n => String(n).padStart(2,"0");
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function fdatetime(ts){
+  try{ return new Date(ts).toLocaleString("es-AR",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}); }catch(e){ return ""; }
+}
 
 function toast(m){ const t=$("#toast"); t.textContent=m; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),1600); }
 function rot(id){ let h=0; for(const c of id) h=(h*31+c.charCodeAt(0))%1000; return ((h%7)-3); }
@@ -360,6 +377,7 @@ function createCardEl(n){
     ${n.title?`<h3>${esc(n.title)}</h3>`:""}
     <div class="body">${esc(n.body)}</div>
     ${n.tags?`<div class="tags">${esc(n.tags)}</div>`:""}
+    ${n.remind_at && !n.reminded?`<div class="reminder">⏰ ${fdatetime(n.remind_at)}</div>`:""}
     <div class="date">${srcBadge(n)}${fdate(n.created)}</div>
   `;
   el.addEventListener("pointerdown", (e) => onCardPointerDown(e, n, el));
@@ -463,6 +481,7 @@ function openEditor(note){
   $("#titleInput").value = note ? note.title : "";
   $("#bodyInput").value = note ? note.body : "";
   $("#tagsInput").value = note ? note.tags : "";
+  $("#reminderInput").value = note ? toDatetimeLocal(note.remind_at) : "";
   $("#colorRow").innerHTML = COLORS.map(c=>`<span data-c="${c}" style="background:${c}" class="${c===pickedColor?'sel':''}"></span>`).join("");
   $("#editOverlay").classList.add("open");
   setTimeout(()=>$("#bodyInput").focus(),50);
@@ -474,11 +493,13 @@ function openDetail(n){
     ${n.title?`<h2>${esc(n.title)}</h2>`:""}
     <div class="body-full">${linkify(n.body)}</div>
     ${n.tags?`<div style="font-family:var(--hand);font-size:18px;color:var(--accent-dk);margin-top:10px">${esc(n.tags)}</div>`:""}
+    ${n.remind_at?`<div style="font-size:13px;font-weight:600;color:var(--accent-dk);margin-top:10px">⏰ ${fdatetime(n.remind_at)}${n.reminded?" (ya avisado)":""}</div>`:""}
     <div style="font-size:11px;color:var(--mut);margin-top:8px">${srcBadge(n)}${fdate(n.created)}</div>
     <div class="row">
       <button class="btn ghost" data-toggledone="${n.id}">${n.done?"Marcar pendiente":"Marcar hecha"}</button>
       <button class="btn ghost" data-edit="${n.id}">Editar</button>
       <button class="btn ghost" data-copy="${n.id}">Copiar</button>
+      ${n.remind_at?`<button class="btn ghost" data-clearreminder="${n.id}">Quitar recordatorio</button>`:""}
       <button class="btn ghost" data-delfull="${n.id}" style="color:#a33">Eliminar</button>
       <button class="btn" data-close>Cerrar</button>
     </div>`;
@@ -492,12 +513,17 @@ $("#saveEdit").onclick=async ()=>{
   const title=$("#titleInput").value.trim();
   const body=$("#bodyInput").value.trim();
   const tags=$("#tagsInput").value.trim();
+  const reminderVal=$("#reminderInput").value;
+  const remindAt = reminderVal ? new Date(reminderVal).getTime() : null;
   if(!body && !title){ toast("Escribí algo primero"); return; }
+  let id = editingId;
   if(editingId){
     await apiUpdate(editingId, { title, body, tags, color:pickedColor });
   }else{
-    await apiCreate({ title, body, tags, color:pickedColor, x: pendingPos.x, y: pendingPos.y });
+    const created = await apiCreate({ title, body, tags, color:pickedColor, x: pendingPos.x, y: pendingPos.y });
+    id = created.id;
   }
+  await apiReminder(id, remindAt);
   await loadNotes(); render();
   $("#editOverlay").classList.remove("open");
   toast(editingId?"Nota actualizada ✓":"Clavada en el corcho ✓");
@@ -532,6 +558,7 @@ $("#detailOverlay").onclick=async (e)=>{
   const ed=e.target.closest("[data-edit]"); if(ed){ const n=notes.find(x=>x.id===ed.dataset.edit); $("#detailOverlay").classList.remove("open"); openEditor(n); return; }
   const cp=e.target.closest("[data-copy]"); if(cp){ const n=notes.find(x=>x.id===cp.dataset.copy); navigator.clipboard.writeText((n.title?n.title+"\n\n":"")+n.body); toast("Copiado"); return; }
   const td=e.target.closest("[data-toggledone]"); if(td){ const n=notes.find(x=>x.id===td.dataset.toggledone); if(n){ n.done = n.done?0:1; await apiDone(n.id, !!n.done); $("#detailOverlay").classList.remove("open"); render(); } return; }
+  const cr=e.target.closest("[data-clearreminder]"); if(cr){ const n=notes.find(x=>x.id===cr.dataset.clearreminder); if(n){ n.remind_at=null; await apiReminder(n.id, null); $("#detailOverlay").classList.remove("open"); render(); } return; }
   const df=e.target.closest("[data-delfull]"); if(df){ if(confirm("¿Eliminar esta nota?")){ await apiDelete(df.dataset.delfull); await loadNotes(); render(); $("#detailOverlay").classList.remove("open"); } }
 };
 $("#editOverlay").onclick=(e)=>{ if(e.target.id==="editOverlay") $("#editOverlay").classList.remove("open"); };

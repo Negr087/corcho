@@ -18,6 +18,7 @@ const {
   updateNotePosition,
   updateNoteDone,
   deleteNote,
+  setReminder,
 } = require("./db");
 const { startBot } = require("./bot");
 const { passport, configurePassport, ensureAuthApi, ensureAuthPage } = require("./auth");
@@ -99,6 +100,16 @@ app.patch("/api/notes/:id/position", ensureAuthApi, (req, res) => {
 app.patch("/api/notes/:id/done", ensureAuthApi, (req, res) => {
   const { done } = req.body || {};
   const ok = updateNoteDone(req.params.id, req.user.email, !!done);
+  if (!ok) return res.status(404).json({ error: "no encontrada" });
+  res.status(204).end();
+});
+
+app.patch("/api/notes/:id/reminder", ensureAuthApi, (req, res) => {
+  const { remindAt } = req.body || {};
+  if (remindAt !== null && typeof remindAt !== "number") {
+    return res.status(400).json({ error: "remindAt tiene que ser un timestamp o null" });
+  }
+  const ok = setReminder(req.params.id, req.user.email, remindAt);
   if (!ok) return res.status(404).json({ error: "no encontrada" });
   res.status(204).end();
 });
