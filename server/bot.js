@@ -85,6 +85,14 @@ function startBot() {
   const bot = new TelegramBot(token, { polling: true });
   const lastCreatedByUser = new Map();
 
+  bot
+    .setMyCommands([
+      { command: "listar", description: "Ver las últimas notas" },
+      { command: "borrar", description: "Borrar la última nota que agregué" },
+      { command: "recordar", description: "Poner un recordatorio, ej: mañana 10:00" },
+    ])
+    .catch((err) => console.error("No se pudieron registrar los comandos en Telegram:", err.message));
+
   function isAllowed(msg) {
     return owners.has(String(msg.from.id));
   }
