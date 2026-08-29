@@ -70,7 +70,7 @@ Corcho de notas multiusuario con backend propio: cada quien inicia sesión con G
 - El idioma de transcripción por defecto es español (`WHISPER_LANGUAGE=spanish` en `.env.example`).
 - `server/index.js` fuerza IPv4 puro (`net.setDefaultAutoSelectFamily(false)` + `dns.setDefaultResultOrder('ipv4first')`) antes de cualquier otra cosa. Es un workaround necesario en entornos (WSL2, algunos VPS) que anuncian rutas IPv6 rotas — sin esto, el polling de Telegram falla con `EFATAL: AggregateError` de forma intermitente aunque la red ande bien.
 - Título/etiquetas de las notas que crea el bot se derivan con heurísticas simples en `server/noteHeuristics.js` (primera oración como título, palabras clave para etiquetas) — no usa ningún LLM, así que es gratis pero limitado.
-- Las sesiones de login se guardan en memoria (`express-session` sin store persistente). Si el proceso se reinicia (deploy, crash), todos quedan desloheados y tienen que volver a entrar con Google — un click, sin fricción real. Si en algún momento molesta, se puede sumar un store persistente (ej. `connect-sqlite3`).
+- Las sesiones de login se guardan en la misma base SQLite (tabla `sessions`, `server/sessionStore.js`), no en memoria — sobreviven a reinicios del proceso (deploys, crashes), así que un deploy no desloguea a nadie.
 
 ## Producción (VPS Windows)
 

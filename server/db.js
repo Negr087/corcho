@@ -43,6 +43,15 @@ if (!existingColumns.includes("image_path")) db.exec("ALTER TABLE notes ADD COLU
 if (!existingColumns.includes("remind_at")) db.exec("ALTER TABLE notes ADD COLUMN remind_at INTEGER");
 if (!existingColumns.includes("reminded")) db.exec("ALTER TABLE notes ADD COLUMN reminded INTEGER DEFAULT 0");
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS sessions (
+    sid TEXT PRIMARY KEY,
+    sess TEXT NOT NULL,
+    expires INTEGER NOT NULL
+  )
+`);
+db.prepare("DELETE FROM sessions WHERE expires < ?").run(Date.now());
+
 for (const row of db.prepare("SELECT id FROM notes WHERE x IS NULL OR y IS NULL").all()) {
   const pos = scatterPosition();
   db.prepare("UPDATE notes SET x = ?, y = ? WHERE id = ?").run(pos.x, pos.y, row.id);
@@ -198,6 +207,24 @@ function markReminded(id) {
   db.prepare("UPDATE notes SET reminded = 1 WHERE id = ?").run(id);
 }
 
+function getSession(sid) {
+  return db.prepare("SELECT sess, expires FROM sessions WHERE sid = ?").get(sid);
+}
+
+function setSession(sid, sess, expires) {
+  db.prepare(
+    "INSERT INTO sessions (sid, sess, expires) VALUES (?, ?, ?) ON CONFLICT(sid) DO UPDATE SET sess = excluded.sess, expires = excluded.expires"
+  ).run(sid, sess, expires);
+}
+
+function destroySession(sid) {
+  db.prepare("DELETE FROM sessions WHERE sid = ?").run(sid);
+}
+
+function pruneExpiredSessions() {
+  db.prepare("DELETE FROM sessions WHERE expires < ?").run(Date.now());
+}
+
 module.exports = {
   IMAGES_DIR,
   listNotes,
@@ -212,4 +239,8 @@ module.exports = {
   setReminder,
   getDueReminders,
   markReminded,
+  getSession,
+  setSession,
+  destroySession,
+  pruneExpiredSessions,
 };

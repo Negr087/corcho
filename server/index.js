@@ -22,6 +22,7 @@ const {
 } = require("./db");
 const { startBot } = require("./bot");
 const { passport, configurePassport, ensureAuthApi, ensureAuthPage } = require("./auth");
+const SqliteSessionStore = require("./sessionStore");
 
 configurePassport();
 
@@ -31,6 +32,7 @@ app.use(express.json());
 
 app.use(
   session({
+    store: new SqliteSessionStore(),
     secret: process.env.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
