@@ -15,6 +15,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;600&family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
 <style>
   :root{
     --paper:#F6F2EA; --paper2:#F4EDDC; --ink:#2B241C; --ink2:#4A4136;
@@ -227,6 +228,9 @@ let editingId = null;
 let pickedColor = COLORS[0];
 let pendingPos = null;
 let lastDragUndo = null;
+let knownNoteIds = new Set();
+let hasRenderedOnce = false;
+const REDUCE_MOTION = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 // --- estado del lienzo (pan/zoom) ---
 let pan = { x: 0, y: 0 };
@@ -238,6 +242,9 @@ let interacting = false;
 function applyTransform(){
   $("#world").style.transform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
   $("#zoomLabel").textContent = Math.round(zoom * 100) + "%";
+  // parallax sutil: el fondo de corcho se mueve mas lento que las notas,
+  // da sensacion de profundidad sin ser un canvas 3D de verdad.
+  document.body.style.backgroundPosition = `${pan.x * 0.15}px ${pan.y * 0.15}px`;
 }
 function screenToWorld(sx, sy){ return { x: (sx - pan.x) / zoom, y: (sy - pan.y) / zoom }; }
 function setZoomAt(cx, cy, newZoom){
@@ -368,7 +375,7 @@ function createCardEl(n){
   el.style.background = n.color || COLORS[0];
   el.style.left = (n.x ?? 0) + "px";
   el.style.top = (n.y ?? 0) + "px";
-  el.style.transform = `translate(-50%,-50%) rotate(${rot(n.id)}deg)`;
+  gsap.set(el, { xPercent: -50, yPercent: -50, rotation: rot(n.id) });
   el.innerHTML = `
     <div class="pin"></div>
     <button class="del" data-del="${n.id}" title="Sacar del corcho">×</button>
@@ -400,6 +407,7 @@ function onCardPointerDown(e, note, el){
     if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) > 4){
       moved = true;
       el.classList.add("dragging");
+      gsap.to(el, { scale: 1.08, duration: 0.18, ease: "power2.out" });
     }
     if (moved){
       el.style.left = (startLeft + dx) + "px";
@@ -413,6 +421,7 @@ function onCardPointerDown(e, note, el){
     el.classList.remove("dragging");
     interacting = false;
     if (moved){
+      gsap.to(el, { scale: 1, duration: 0.55, ease: "elastic.out(1, 0.5)" });
       const dx = (ev.clientX - startX) / zoom;
       const dy = (ev.clientY - startY) / zoom;
       const newX = Math.round(startLeft + dx), newY = Math.round(startTop + dy);
@@ -420,7 +429,7 @@ function onCardPointerDown(e, note, el){
       note.x = newX; note.y = newY;
       apiPosition(note.id, newX, newY);
     } else {
-      openDetail(note);
+      openDetail(note, el);
     }
   }
   el.addEventListener("pointermove", onMove);
@@ -435,8 +444,23 @@ function render(){
     $("#emptyState").style.display = "flex";
   } else {
     $("#emptyState").style.display = "none";
-    notes.forEach(n => world.appendChild(createCardEl(n)));
+    const freshIds = [];
+    notes.forEach(n => {
+      const el = createCardEl(n);
+      world.appendChild(el);
+      if (!knownNoteIds.has(n.id)) freshIds.push({ n, el });
+    });
+    if (freshIds.length && !REDUCE_MOTION && hasRenderedOnce){
+      freshIds.forEach(({ el }) => {
+        gsap.from(el, {
+          y: -70, scale: 0.4, opacity: 0,
+          duration: 0.6, ease: "back.out(1.8)",
+        });
+      });
+    }
   }
+  knownNoteIds = new Set(notes.map(n => n.id));
+  hasRenderedOnce = true;
   applySearchFilter();
 }
 
@@ -487,7 +511,7 @@ function openEditor(note){
   setTimeout(()=>$("#bodyInput").focus(),50);
 }
 
-function openDetail(n){
+function openDetail(n, sourceEl){
   $("#detailContent").innerHTML=`
     ${n.image_path?`<img src="/media/${n.id}" style="width:100%;border-radius:12px;margin-bottom:14px;display:block">`:""}
     ${n.title?`<h2>${esc(n.title)}</h2>`:""}
@@ -503,7 +527,29 @@ function openDetail(n){
       <button class="btn ghost" data-delfull="${n.id}" style="color:#a33">Eliminar</button>
       <button class="btn" data-close>Cerrar</button>
     </div>`;
-  $("#detailOverlay").classList.add("open");
+  const overlay = $("#detailOverlay");
+  const sheet = overlay.querySelector(".sheet");
+  overlay.classList.add("open");
+  if (REDUCE_MOTION){
+    return;
+  }
+  gsap.set(overlay, { backgroundColor: "rgba(43,36,28,0)" });
+  gsap.to(overlay, { backgroundColor: "rgba(43,36,28,.5)", duration: 0.25, ease: "power1.out" });
+  if (sourceEl){
+    const r = sourceEl.getBoundingClientRect();
+    const sr = sheet.getBoundingClientRect();
+    gsap.fromTo(sheet,
+      {
+        x: (r.left + r.width/2) - (sr.left + sr.width/2),
+        y: (r.top + r.height/2) - (sr.top + sr.height/2),
+        scale: Math.max(0.15, Math.min(1, r.width / sr.width)),
+        opacity: 0.7,
+      },
+      { x: 0, y: 0, scale: 1, opacity: 1, duration: 0.45, ease: "power3.out" }
+    );
+  } else {
+    gsap.from(sheet, { scale: 0.9, opacity: 0, duration: 0.3, ease: "power2.out" });
+  }
 }
 
 $("#addBtn").onclick=()=>openEditor(null);
@@ -546,18 +592,27 @@ $("#world").addEventListener("click", async (e) => {
   if (doneBtn){
     e.stopPropagation();
     const n = notes.find(x => x.id === doneBtn.dataset.done);
-    if (n){
-      n.done = n.done ? 0 : 1;
-      await apiDone(n.id, !!n.done);
-      render();
-    }
+    const cardEl = doneBtn.closest(".card");
+    if (n) playDoneToggle(n, cardEl);
   }
 });
+
+function playDoneToggle(n, cardEl){
+  n.done = n.done ? 0 : 1;
+  apiDone(n.id, !!n.done);
+  if (cardEl && !REDUCE_MOTION){
+    gsap.timeline()
+      .to(cardEl, { scale: 0.9, rotation: "+=8", duration: 0.15, ease: "power1.inOut" })
+      .to(cardEl, { scale: 1, rotation: rot(n.id), duration: 0.3, ease: "power2.out", onComplete: render });
+  } else {
+    render();
+  }
+}
 $("#detailOverlay").onclick=async (e)=>{
   if(e.target.id==="detailOverlay"||e.target.hasAttribute("data-close")){ $("#detailOverlay").classList.remove("open"); return; }
   const ed=e.target.closest("[data-edit]"); if(ed){ const n=notes.find(x=>x.id===ed.dataset.edit); $("#detailOverlay").classList.remove("open"); openEditor(n); return; }
   const cp=e.target.closest("[data-copy]"); if(cp){ const n=notes.find(x=>x.id===cp.dataset.copy); navigator.clipboard.writeText((n.title?n.title+"\n\n":"")+n.body); toast("Copiado"); return; }
-  const td=e.target.closest("[data-toggledone]"); if(td){ const n=notes.find(x=>x.id===td.dataset.toggledone); if(n){ n.done = n.done?0:1; await apiDone(n.id, !!n.done); $("#detailOverlay").classList.remove("open"); render(); } return; }
+  const td=e.target.closest("[data-toggledone]"); if(td){ const n=notes.find(x=>x.id===td.dataset.toggledone); if(n){ $("#detailOverlay").classList.remove("open"); playDoneToggle(n, document.querySelector(`.card[data-id="${n.id}"]`)); } return; }
   const cr=e.target.closest("[data-clearreminder]"); if(cr){ const n=notes.find(x=>x.id===cr.dataset.clearreminder); if(n){ n.remind_at=null; await apiReminder(n.id, null); $("#detailOverlay").classList.remove("open"); render(); } return; }
   const df=e.target.closest("[data-delfull]"); if(df){ if(confirm("¿Eliminar esta nota?")){ await apiDelete(df.dataset.delfull); await loadNotes(); render(); $("#detailOverlay").classList.remove("open"); } }
 };
