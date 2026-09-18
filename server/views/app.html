@@ -445,7 +445,12 @@ function render(){
   } else {
     $("#emptyState").style.display = "none";
     const freshIds = [];
-    notes.forEach(n => {
+    // notes viene ordenado mas-nuevo-primero (para /listar del bot, etc).
+    // Para el pintado hay que invertirlo: el ultimo <div> agregado al DOM
+    // es el que queda arriba visualmente cuando dos notas se superponen,
+    // asi que pintamos las mas viejas primero y la mas nueva al final.
+    const byCreatedAsc = [...notes].sort((a, b) => a.created - b.created);
+    byCreatedAsc.forEach(n => {
       const el = createCardEl(n);
       world.appendChild(el);
       if (!knownNoteIds.has(n.id)) freshIds.push({ n, el });
