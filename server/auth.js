@@ -8,6 +8,17 @@ function allowedEmails() {
     .filter(Boolean);
 }
 
+// Invitados de solo lectura: ven el corcho de otra persona sin poder
+// tocarlo. Formato: READONLY_GUESTS="invitado@mail.com:dueño@mail.com,..."
+function readonlyGuestsMap() {
+  const map = new Map();
+  for (const pair of (process.env.READONLY_GUESTS || "").split(",")) {
+    const [guest, owner] = pair.split(":").map((s) => (s || "").trim().toLowerCase());
+    if (guest && owner) map.set(guest, owner);
+  }
+  return map;
+}
+
 passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((user, done) => done(null, user));
 
@@ -27,10 +38,13 @@ function configurePassport() {
         if (!email || (allowed.length && !allowed.includes(email))) {
           return done(null, false);
         }
+        const guestOf = readonlyGuestsMap().get(email);
         const user = {
           email,
           name: profile.displayName || email,
           picture: (profile.photos && profile.photos[0] && profile.photos[0].value) || "",
+          boardOwner: guestOf || email,
+          readOnly: !!guestOf,
         };
         return done(null, user);
       }
@@ -48,4 +62,18 @@ function ensureAuthPage(req, res, next) {
   res.redirect("/login");
 }
 
-module.exports = { passport, configurePassport, ensureAuthApi, ensureAuthPage };
+function ensureWriteAccess(req, res, next) {
+  if (req.user && req.user.readOnly) {
+    return res.status(403).json({ error: "acceso de solo lectura" });
+  }
+  next();
+}
+
+module.exports = {
+  passport,
+  configurePassport,
+  ensureAuthApi,
+  ensureAuthPage,
+  ensureWriteAccess,
+  readonlyGuestsMap,
+};

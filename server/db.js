@@ -42,6 +42,7 @@ if (!existingColumns.includes("telegram_message_id"))
 if (!existingColumns.includes("image_path")) db.exec("ALTER TABLE notes ADD COLUMN image_path TEXT");
 if (!existingColumns.includes("remind_at")) db.exec("ALTER TABLE notes ADD COLUMN remind_at INTEGER");
 if (!existingColumns.includes("reminded")) db.exec("ALTER TABLE notes ADD COLUMN reminded INTEGER DEFAULT 0");
+if (!existingColumns.includes("last_nagged_at")) db.exec("ALTER TABLE notes ADD COLUMN last_nagged_at INTEGER");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
@@ -204,7 +205,24 @@ function getDueReminders() {
 }
 
 function markReminded(id) {
-  db.prepare("UPDATE notes SET reminded = 1 WHERE id = ?").run(id);
+  db.prepare("UPDATE notes SET reminded = 1, last_nagged_at = ? WHERE id = ?").run(Date.now(), id);
+}
+
+// Notas cuyo recordatorio ya sono pero siguen sin marcarse hechas: hay que
+// insistir cada `intervalMs` hasta que se completen o le saquen el
+// recordatorio.
+function getOverdueNags(intervalMs) {
+  return db
+    .prepare(
+      `SELECT * FROM notes
+       WHERE remind_at IS NOT NULL AND reminded = 1 AND done = 0
+         AND (last_nagged_at IS NULL OR last_nagged_at <= ?)`
+    )
+    .all(Date.now() - intervalMs);
+}
+
+function touchNagged(id) {
+  db.prepare("UPDATE notes SET last_nagged_at = ? WHERE id = ?").run(Date.now(), id);
 }
 
 function getSession(sid) {
@@ -239,6 +257,8 @@ module.exports = {
   setReminder,
   getDueReminders,
   markReminded,
+  getOverdueNags,
+  touchNagged,
   getSession,
   setSession,
   destroySession,

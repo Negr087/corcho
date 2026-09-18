@@ -14,6 +14,8 @@ const {
   setReminder,
   getDueReminders,
   markReminded,
+  getOverdueNags,
+  touchNagged,
 } = require("./db");
 const { transcribeAudioFile } = require("./transcribe");
 const { deriveNote, parseReminderTime } = require("./noteHeuristics");
@@ -284,6 +286,7 @@ function startBot() {
   if (owners.size) {
     const emailToTelegramId = new Map();
     for (const [id, email] of owners) emailToTelegramId.set(email, id);
+    const nagIntervalMs = (Number(process.env.REMINDER_NAG_HOURS) || 24) * 60 * 60 * 1000;
 
     setInterval(() => {
       for (const note of getDueReminders()) {
@@ -296,6 +299,24 @@ function startBot() {
           .sendMessage(telegramId, `⏰ Recordatorio: ${note.title || note.body.slice(0, 80)}`)
           .catch((err) => console.error("Error mandando recordatorio:", err.message))
           .finally(() => markReminded(note.id));
+      }
+
+      // avisos de "sigue pendiente" para recordatorios que ya sonaron y
+      // todavia no se marcaron como hechos, hasta que se completen o le
+      // saquen el recordatorio.
+      for (const note of getOverdueNags(nagIntervalMs)) {
+        const telegramId = emailToTelegramId.get(note.owner);
+        if (!telegramId) {
+          touchNagged(note.id);
+          continue;
+        }
+        bot
+          .sendMessage(
+            telegramId,
+            `⏰ Sigue pendiente: ${note.title || note.body.slice(0, 80)}\n\nRespondé a esta nota o marcala como hecha en el corcho, o sacale el recordatorio si ya no hace falta.`
+          )
+          .catch((err) => console.error("Error mandando aviso de vencido:", err.message))
+          .finally(() => touchNagged(note.id));
       }
     }, 60 * 1000);
   }

@@ -24,6 +24,22 @@
     --serif:"Cormorant Garamond",Georgia,serif;
     --sans:"Inter",system-ui,sans-serif;
     --hand:"Caveat",cursive;
+    /* las notas son "papel" y quedan siempre claras, sea cual sea el tema
+       del sitio -- estos valores no cambian en modo oscuro. */
+    --card-ink:#2B241C; --card-ink2:#4A4136; --card-mut2:#A2988C;
+    --card-accent:#D97A3F; --card-accent-dk:#7C4A20;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#2A2420; --paper2:#332C26; --ink:#EDE6DA; --ink2:#C9BFAF;
+      --mut:#9C9186; --mut2:#6E6459; --accent:#E08A4D; --accent-dk:#F0A868;
+      --cork:#3d2f22;
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#2A2420; --paper2:#332C26; --ink:#EDE6DA; --ink2:#C9BFAF;
+    --mut:#9C9186; --mut2:#6E6459; --accent:#E08A4D; --accent-dk:#F0A868;
+    --cork:#3d2f22;
   }
   *{margin:0;padding:0;box-sizing:border-box}
   html,body{height:100%}
@@ -92,26 +108,26 @@
     background:radial-gradient(circle at 35% 30%, #ff9d6b, var(--accent) 55%, var(--accent-dk));
     box-shadow:rgba(120,80,40,.35) 0 4px 8px, inset rgba(255,255,255,.5) 0 1px 1px;
   }
-  .card h3{font-family:var(--serif); font-weight:600; font-size:22px; line-height:1.2; color:var(--ink); margin-bottom:8px}
-  .card .body{font-size:14px; line-height:1.5; color:var(--ink2); white-space:pre-wrap; word-break:break-word;
+  .card h3{font-family:var(--serif); font-weight:600; font-size:22px; line-height:1.2; color:var(--card-ink); margin-bottom:8px}
+  .card .body{font-size:14px; line-height:1.5; color:var(--card-ink2); white-space:pre-wrap; word-break:break-word;
     display:-webkit-box; -webkit-line-clamp:7; -webkit-box-orient:vertical; overflow:hidden}
-  .card .tags{margin-top:12px; font-family:var(--hand); font-size:16px; color:var(--accent-dk)}
-  .card .reminder{margin-top:8px; font-size:11.5px; font-weight:600; color:var(--accent-dk)}
-  .card .date{margin-top:8px; font-size:10.5px; color:var(--mut2); letter-spacing:.04em; display:flex; align-items:center; gap:5px}
+  .card .tags{margin-top:12px; font-family:var(--hand); font-size:16px; color:var(--card-accent-dk)}
+  .card .reminder{margin-top:8px; font-size:11.5px; font-weight:600; color:var(--card-accent-dk)}
+  .card .date{margin-top:8px; font-size:10.5px; color:var(--card-mut2); letter-spacing:.04em; display:flex; align-items:center; gap:5px}
   .card .del{
     position:absolute; top:10px; right:10px; width:24px; height:24px; border-radius:50%;
-    background:transparent; color:var(--mut2); font-size:16px; line-height:1; opacity:0; transition:opacity .2s;
+    background:transparent; color:var(--card-mut2); font-size:16px; line-height:1; opacity:0; transition:opacity .2s;
     display:grid; place-items:center;
   }
   .card:hover .del{opacity:1}
-  .card .del:hover{background:rgba(43,36,28,.10); color:var(--ink)}
+  .card .del:hover{background:rgba(43,36,28,.10); color:var(--card-ink)}
   .card .check{
     position:absolute; top:10px; left:10px; width:22px; height:22px; border-radius:50%;
     border:2px solid rgba(43,36,28,.3); background:rgba(255,255,255,.35); cursor:pointer;
     display:grid; place-items:center; font-size:13px; color:transparent; transition:all .15s;
   }
-  .card .check:hover{border-color:var(--accent-dk)}
-  .card.done .check{background:var(--accent); border-color:var(--accent-dk); color:#fff}
+  .card .check:hover{border-color:var(--card-accent-dk)}
+  .card.done .check{background:var(--card-accent); border-color:var(--card-accent-dk); color:#fff}
   .card.done{opacity:.6}
   .card.done h3{text-decoration:line-through}
   .card .thumb{
@@ -151,6 +167,8 @@
   .user span{font-size:13px; font-weight:600; color:var(--ink)}
   .user a{font-size:12.5px; color:var(--mut); text-decoration:none; border-bottom:1px dotted var(--mut)}
   .user a:hover{color:var(--ink)}
+  body.readonly #addBtn, body.readonly .card .del, body.readonly .card .check{display:none!important}
+  body.readonly .card{cursor:pointer}
 </style>
 </head>
 <body>
@@ -164,6 +182,7 @@
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
     <input id="search" placeholder="Buscar en mis notas…" />
   </div>
+  <button class="btn ghost" id="themeToggle" title="Cambiar tema">🌙</button>
   <button class="btn ghost" id="exportBtn">Backup</button>
   <button class="btn accent" id="addBtn">+ Nueva nota</button>
   <div class="user" id="userBox" style="display:none">
@@ -219,6 +238,26 @@
 
 <script>
 const $ = s => document.querySelector(s);
+
+// --- tema claro/oscuro ---
+const THEME_KEY = "corcho.theme.v1";
+function applyTheme(theme){
+  if (theme === "dark" || theme === "light") document.documentElement.setAttribute("data-theme", theme);
+  else document.documentElement.removeAttribute("data-theme");
+  const btn = $("#themeToggle");
+  if (btn){
+    const isDark = theme === "dark" || (theme !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    btn.textContent = isDark ? "☀️" : "🌙";
+  }
+}
+function toggleTheme(){
+  const current = localStorage.getItem(THEME_KEY);
+  const isDark = current === "dark" || (!current && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const next = isDark ? "light" : "dark";
+  try{ localStorage.setItem(THEME_KEY, next); }catch(e){}
+  applyTheme(next);
+}
+applyTheme(localStorage.getItem(THEME_KEY));
 const COLORS = [
   "#F4EDDC","#ECD3CD","#CFD3BD","#CFC6E0","#F7C99B","#F6F2EA",
   "#BFD8D2","#F5B8B0","#FFE29A","#B8CDE0","#D9B8D4","#C9B79C","#A8C3A0","#E8A87C"
@@ -230,6 +269,7 @@ let pendingPos = null;
 let lastDragUndo = null;
 let knownNoteIds = new Set();
 let hasRenderedOnce = false;
+let isReadOnly = false;
 const REDUCE_MOTION = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 // --- estado del lienzo (pan/zoom) ---
@@ -310,8 +350,10 @@ async function loadMe(){
   if (r.status === 401){ location.href = "/login"; return; }
   const me = await r.json();
   $("#userAvatar").src = me.picture || "";
-  $("#userName").textContent = me.name || me.email;
+  $("#userName").textContent = (me.name || me.email) + (me.readOnly ? " (solo lectura)" : "");
   $("#userBox").style.display = "flex";
+  isReadOnly = !!me.readOnly;
+  document.body.classList.toggle("readonly", isReadOnly);
 }
 async function loadNotes(){
   const r = checkAuth(await fetch("/api/notes"));
@@ -395,6 +437,7 @@ function onCardPointerDown(e, note, el){
   if (e.target.closest(".del") || e.target.closest(".check")) return;
   if (e.pointerType === "mouse" && e.button !== 0) return;
   e.stopPropagation();
+  if (isReadOnly){ openDetail(note, el); return; }
   const startX = e.clientX, startY = e.clientY;
   const startLeft = note.x ?? 0, startTop = note.y ?? 0;
   let moved = false;
@@ -525,11 +568,11 @@ function openDetail(n, sourceEl){
     ${n.remind_at?`<div style="font-size:13px;font-weight:600;color:var(--accent-dk);margin-top:10px">⏰ ${fdatetime(n.remind_at)}${n.reminded?" (ya avisado)":""}</div>`:""}
     <div style="font-size:11px;color:var(--mut);margin-top:8px">${srcBadge(n)}${fdate(n.created)}</div>
     <div class="row">
-      <button class="btn ghost" data-toggledone="${n.id}">${n.done?"Marcar pendiente":"Marcar hecha"}</button>
-      <button class="btn ghost" data-edit="${n.id}">Editar</button>
+      ${isReadOnly ? "" : `<button class="btn ghost" data-toggledone="${n.id}">${n.done?"Marcar pendiente":"Marcar hecha"}</button>`}
+      ${isReadOnly ? "" : `<button class="btn ghost" data-edit="${n.id}">Editar</button>`}
       <button class="btn ghost" data-copy="${n.id}">Copiar</button>
-      ${n.remind_at?`<button class="btn ghost" data-clearreminder="${n.id}">Quitar recordatorio</button>`:""}
-      <button class="btn ghost" data-delfull="${n.id}" style="color:#a33">Eliminar</button>
+      ${(!isReadOnly && n.remind_at)?`<button class="btn ghost" data-clearreminder="${n.id}">Quitar recordatorio</button>`:""}
+      ${isReadOnly ? "" : `<button class="btn ghost" data-delfull="${n.id}" style="color:#a33">Eliminar</button>`}
       <button class="btn" data-close>Cerrar</button>
     </div>`;
   const overlay = $("#detailOverlay");
@@ -558,6 +601,7 @@ function openDetail(n, sourceEl){
 }
 
 $("#addBtn").onclick=()=>openEditor(null);
+$("#themeToggle").onclick=toggleTheme;
 $("#cancelEdit").onclick=()=>$("#editOverlay").classList.remove("open");
 $("#colorRow").onclick=(e)=>{ const s=e.target.closest("[data-c]"); if(!s)return; pickedColor=s.dataset.c; [...$("#colorRow").children].forEach(x=>x.classList.toggle("sel",x.dataset.c===pickedColor)); };
 $("#saveEdit").onclick=async ()=>{
@@ -629,7 +673,7 @@ $("#exportBtn").onclick=()=>{
   a.download="corcho-backup-"+new Date().toISOString().slice(0,10)+".json"; a.click();
   toast("Backup descargado");
 };
-$("#exportBtn").oncontextmenu=(e)=>{ e.preventDefault(); $("#importFile").click(); };
+$("#exportBtn").oncontextmenu=(e)=>{ e.preventDefault(); if(isReadOnly){ toast("Solo lectura"); return; } $("#importFile").click(); };
 $("#importFile").onchange=(e)=>{
   const f=e.target.files[0]; if(!f)return;
   const r=new FileReader();
