@@ -18,7 +18,7 @@ const {
   touchNagged,
 } = require("./db");
 const { transcribeAudioFile } = require("./transcribe");
-const { deriveNote, parseReminderTime } = require("./noteHeuristics");
+const { deriveNote, parseReminderTime, detectReminderIntent } = require("./noteHeuristics");
 
 async function ocrImage(imagePath) {
   const { createWorker } = require("tesseract.js");
@@ -29,6 +29,16 @@ async function ocrImage(imagePath) {
   } finally {
     await worker.terminate();
   }
+}
+
+// Si el texto pide claramente un recordatorio ("recordame...", "avisame...")
+// y se le puede sacar una fecha/hora futura, se lo pone a la nota recien
+// creada y devuelve una lineita para sumar a la confirmacion del bot.
+function applyAutoReminder(noteId, owner, text) {
+  const date = detectReminderIntent(text);
+  if (!date || date.getTime() <= Date.now()) return "";
+  setReminder(noteId, owner, date.getTime());
+  return `\n⏰ Te aviso el ${date.toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" })}`;
 }
 
 function buildWeeklySummary(owner) {
@@ -91,7 +101,7 @@ function startBot() {
     .setMyCommands([
       { command: "listar", description: "Ver las últimas notas" },
       { command: "borrar", description: "Borrar la última nota que agregué" },
-      { command: "recordar", description: "Poner un recordatorio, ej: mañana 10:00" },
+      { command: "recordar", description: "Poner un recordatorio, ej: mañana a las 10" },
     ])
     .catch((err) => console.error("No se pudieron registrar los comandos en Telegram:", err.message));
 
@@ -108,10 +118,11 @@ function startBot() {
       msg.chat.id,
       "Hola! Mandame un texto, un audio o una foto y lo clavo en el corcho.\n\n" +
         "Respondele a un mensaje mío (reply) con texto corregido para editar esa nota.\n\n" +
+        "Si decís o escribís algo como 'recordame mañana a las 10 que...' lo detecto solo y te pongo el recordatorio. También podés pedirlo aparte:\n\n" +
         "Comandos:\n" +
         "/listar - ver las ultimas notas\n" +
         "/borrar - borrar la ultima nota que agregue en esta sesion\n" +
-        "/recordar <cuando> - poner un recordatorio (respondiendo a una nota, o si no a la ultima). Ej: /recordar mañana 10:00, /recordar en 2h, /recordar lunes 09:00"
+        "/recordar <cuando> - poner un recordatorio (respondiendo a una nota, o si no a la ultima). Ej: /recordar mañana a las 10, /recordar en 2 horas, /recordar el lunes a las 9 de la mañana"
     );
   });
 
@@ -147,7 +158,7 @@ function startBot() {
     if (!date) {
       bot.sendMessage(
         msg.chat.id,
-        "No entendí la fecha. Probá con: 'mañana 10:00', 'hoy 18:30', '25/08 14:00', 'en 2h', 'en 30 min' o 'lunes 09:00'."
+        "No entendí la fecha. Probá algo como: 'mañana a las 10', 'el lunes a las 9 de la mañana', 'en 2 horas', 'pasado mañana a las 15' o '25/08 14:00'."
       );
       return;
     }
@@ -191,14 +202,19 @@ function startBot() {
         if (target) {
           const { title, body, tags } = deriveNote(msg.text);
           updateNoteBody(target.id, owner, { title, body, tags });
-          bot.sendMessage(msg.chat.id, "Nota actualizada ✓");
+          const reminderNote = applyAutoReminder(target.id, owner, msg.text);
+          bot.sendMessage(msg.chat.id, `Nota actualizada ✓${reminderNote}`);
           return;
         }
       }
       const { title, body, tags } = deriveNote(msg.text);
       const note = createNote({ title, body, tags, source: "telegram", owner });
       lastCreatedByUser.set(userId, note.id);
-      const sent = await bot.sendMessage(msg.chat.id, `Clavada en el corcho ✓${tags ? `\nEtiquetas: ${tags}` : ""}`);
+      const reminderNote = applyAutoReminder(note.id, owner, msg.text);
+      const sent = await bot.sendMessage(
+        msg.chat.id,
+        `Clavada en el corcho ✓${tags ? `\nEtiquetas: ${tags}` : ""}${reminderNote}`
+      );
       setTelegramMessageRef(note.id, msg.chat.id, sent.message_id);
       return;
     }
@@ -220,9 +236,10 @@ function startBot() {
         const { title, body, tags } = deriveNote(text);
         const note = createNote({ title, body, tags, source: "telegram-audio", owner });
         lastCreatedByUser.set(userId, note.id);
+        const reminderNote = applyAutoReminder(note.id, owner, text);
         const sent = await bot.sendMessage(
           msg.chat.id,
-          `Clavada en el corcho ✓${tags ? `\nEtiquetas: ${tags}` : ""}\n\n"${text}"`
+          `Clavada en el corcho ✓${tags ? `\nEtiquetas: ${tags}` : ""}${reminderNote}\n\n"${text}"`
         );
         setTelegramMessageRef(note.id, msg.chat.id, sent.message_id);
       } catch (err) {
