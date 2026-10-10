@@ -21,6 +21,8 @@ db.exec(`
     created INTEGER NOT NULL,
     x REAL,
     y REAL,
+    width REAL,
+    height REAL,
     owner TEXT,
     done INTEGER DEFAULT 0,
     telegram_chat_id TEXT,
@@ -43,6 +45,8 @@ if (!existingColumns.includes("image_path")) db.exec("ALTER TABLE notes ADD COLU
 if (!existingColumns.includes("remind_at")) db.exec("ALTER TABLE notes ADD COLUMN remind_at INTEGER");
 if (!existingColumns.includes("reminded")) db.exec("ALTER TABLE notes ADD COLUMN reminded INTEGER DEFAULT 0");
 if (!existingColumns.includes("last_nagged_at")) db.exec("ALTER TABLE notes ADD COLUMN last_nagged_at INTEGER");
+if (!existingColumns.includes("width")) db.exec("ALTER TABLE notes ADD COLUMN width REAL");
+if (!existingColumns.includes("height")) db.exec("ALTER TABLE notes ADD COLUMN height REAL");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
@@ -161,6 +165,11 @@ function updateNoteDone(id, owner, done) {
   return res.changes > 0;
 }
 
+function updateNoteSize(id, owner, width, height) {
+  const res = db.prepare("UPDATE notes SET width = ?, height = ? WHERE id = ? AND owner = ?").run(width, height, id, owner);
+  return res.changes > 0;
+}
+
 function setTelegramMessageRef(id, chatId, messageId) {
   db.prepare("UPDATE notes SET telegram_chat_id = ?, telegram_message_id = ? WHERE id = ?").run(
     String(chatId),
@@ -250,6 +259,7 @@ module.exports = {
   updateNote,
   updateNotePosition,
   updateNoteDone,
+  updateNoteSize,
   updateNoteBody,
   setTelegramMessageRef,
   findNoteByTelegramMessage,

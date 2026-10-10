@@ -99,6 +99,7 @@
     position:absolute; width:240px; border-radius:10px; padding:20px 18px 16px;
     box-shadow:rgba(70,52,28,.20) 0 14px 34px, rgba(70,55,30,.10) 0 2px 8px;
     cursor:grab; transition:box-shadow .18s; touch-action:none; user-select:none;
+    display:flex; flex-direction:column;
   }
   .card:hover{box-shadow:rgba(70,52,28,.28) 0 22px 50px}
   .card.dragging{cursor:grabbing; z-index:50; box-shadow:rgba(70,52,28,.35) 0 26px 60px}
@@ -108,12 +109,14 @@
     background:radial-gradient(circle at 35% 30%, #ff9d6b, var(--accent) 55%, var(--accent-dk));
     box-shadow:rgba(120,80,40,.35) 0 4px 8px, inset rgba(255,255,255,.5) 0 1px 1px;
   }
-  .card h3{font-family:var(--serif); font-weight:600; font-size:22px; line-height:1.2; color:var(--card-ink); margin-bottom:8px}
-  .card .body{font-size:14px; line-height:1.5; color:var(--card-ink2); white-space:pre-wrap; word-break:break-word;
-    display:-webkit-box; -webkit-line-clamp:7; -webkit-box-orient:vertical; overflow:hidden}
-  .card .tags{margin-top:12px; font-family:var(--hand); font-size:16px; color:var(--card-accent-dk)}
-  .card .reminder{margin-top:8px; font-size:11.5px; font-weight:600; color:var(--card-accent-dk)}
-  .card .date{margin-top:8px; font-size:10.5px; color:var(--card-mut2); letter-spacing:.04em; display:flex; align-items:center; gap:5px}
+  .card h3{font-family:var(--serif); font-weight:600; font-size:22px; line-height:1.2; color:var(--card-ink); margin-bottom:8px;
+    overflow-wrap:anywhere; word-break:break-word; flex-shrink:0}
+  .card .body{font-size:14px; line-height:1.5; color:var(--card-ink2); white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word;
+    display:-webkit-box; -webkit-line-clamp:7; -webkit-box-orient:vertical; overflow:hidden; flex-shrink:0}
+  .card .tags{margin-top:12px; font-family:var(--hand); font-size:16px; color:var(--card-accent-dk); overflow-wrap:anywhere; flex-shrink:0}
+  .card .reminder{margin-top:8px; font-size:11.5px; font-weight:600; color:var(--card-accent-dk); flex-shrink:0}
+  .card .date{margin-top:8px; font-size:10.5px; color:var(--card-mut2); letter-spacing:.04em; display:flex; align-items:center; gap:5px; flex-shrink:0}
+  .card.sized .body{-webkit-line-clamp:unset; display:block; flex:1 1 auto; min-height:0; overflow-y:auto}
   .card .del{
     position:absolute; top:10px; right:10px; width:24px; height:24px; border-radius:50%;
     background:transparent; color:var(--card-mut2); font-size:16px; line-height:1; opacity:0; transition:opacity .2s;
@@ -128,6 +131,14 @@
   }
   .card .check:hover{border-color:var(--card-accent-dk)}
   .card.done .check{background:var(--card-accent); border-color:var(--card-accent-dk); color:#fff}
+  .card .resize-handle{
+    position:absolute; right:1px; bottom:1px; width:24px; height:24px; border-radius:6px 0 8px 0;
+    display:grid; place-items:center; color:var(--card-mut2); opacity:0; cursor:nwse-resize;
+    transition:opacity .2s, color .15s; touch-action:none;
+  }
+  .card .resize-handle svg{width:13px; height:13px}
+  .card:hover .resize-handle{opacity:1}
+  .card .resize-handle:hover{color:var(--card-ink)}
   .card.done{opacity:.6}
   .card.done h3{text-decoration:line-through}
   .card .thumb{
@@ -167,7 +178,7 @@
   .user span{font-size:13px; font-weight:600; color:var(--ink)}
   .user a{font-size:12.5px; color:var(--mut); text-decoration:none; border-bottom:1px dotted var(--mut)}
   .user a:hover{color:var(--ink)}
-  body.readonly #addBtn, body.readonly .card .del, body.readonly .card .check{display:none!important}
+  body.readonly #addBtn, body.readonly .card .del, body.readonly .card .check, body.readonly .card .resize-handle{display:none!important}
   body.readonly .card{cursor:pointer}
 </style>
 </head>
@@ -375,6 +386,11 @@ async function apiPosition(id, x, y){
     method:"PATCH", headers:{"Content-Type":"application/json"}, body:JSON.stringify({x, y})
   }).catch(()=>{});
 }
+async function apiSize(id, width, height){
+  await fetch("/api/notes/"+encodeURIComponent(id)+"/size", {
+    method:"PATCH", headers:{"Content-Type":"application/json"}, body:JSON.stringify({width, height})
+  }).catch(()=>{});
+}
 async function apiDone(id, done){
   await fetch("/api/notes/"+encodeURIComponent(id)+"/done", {
     method:"PATCH", headers:{"Content-Type":"application/json"}, body:JSON.stringify({done})
@@ -412,11 +428,13 @@ function anyOverlayOpen(){
 
 function createCardEl(n){
   const el = document.createElement("div");
-  el.className = "card" + (n.done ? " done" : "");
+  el.className = "card" + (n.done ? " done" : "") + (n.width || n.height ? " sized" : "");
   el.dataset.id = n.id;
   el.style.background = n.color || COLORS[0];
   el.style.left = (n.x ?? 0) + "px";
   el.style.top = (n.y ?? 0) + "px";
+  if (n.width) el.style.width = n.width + "px";
+  if (n.height) el.style.height = n.height + "px";
   gsap.set(el, { xPercent: -50, yPercent: -50, rotation: rot(n.id) });
   el.innerHTML = `
     <div class="pin"></div>
@@ -428,13 +446,17 @@ function createCardEl(n){
     ${n.tags?`<div class="tags">${esc(n.tags)}</div>`:""}
     ${n.remind_at && !n.reminded?`<div class="reminder">⏰ ${fdatetime(n.remind_at)}</div>`:""}
     <div class="date">${srcBadge(n)}${fdate(n.created)}</div>
+    <div class="resize-handle" data-resize="${n.id}" title="Arrastrá para cambiar el tamaño">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15 15 21M21 8 8 21"/></svg>
+    </div>
   `;
   el.addEventListener("pointerdown", (e) => onCardPointerDown(e, n, el));
+  el.querySelector(".resize-handle").addEventListener("pointerdown", (e) => onResizePointerDown(e, n, el));
   return el;
 }
 
 function onCardPointerDown(e, note, el){
-  if (e.target.closest(".del") || e.target.closest(".check")) return;
+  if (e.target.closest(".del") || e.target.closest(".check") || e.target.closest(".resize-handle")) return;
   if (e.pointerType === "mouse" && e.button !== 0) return;
   e.stopPropagation();
   if (isReadOnly){ openDetail(note, el); return; }
@@ -478,6 +500,41 @@ function onCardPointerDown(e, note, el){
   el.addEventListener("pointermove", onMove);
   el.addEventListener("pointerup", onUp);
   el.addEventListener("pointercancel", onUp);
+}
+
+const MIN_CARD_W = 180, MIN_CARD_H = 140, MAX_CARD_W = 560, MAX_CARD_H = 640;
+function onResizePointerDown(e, note, el){
+  if (isReadOnly) return;
+  e.stopPropagation();
+  e.preventDefault();
+  const handle = e.currentTarget;
+  const startX = e.clientX, startY = e.clientY;
+  const rect = el.getBoundingClientRect();
+  const startW = rect.width / zoom, startH = rect.height / zoom;
+  interacting = true;
+  handle.setPointerCapture(e.pointerId);
+
+  function onMove(ev){
+    const dx = (ev.clientX - startX) / zoom;
+    const dy = (ev.clientY - startY) / zoom;
+    const w = Math.min(MAX_CARD_W, Math.max(MIN_CARD_W, Math.round(startW + dx)));
+    const h = Math.min(MAX_CARD_H, Math.max(MIN_CARD_H, Math.round(startH + dy)));
+    el.style.width = w + "px";
+    el.style.height = h + "px";
+    el.classList.add("sized");
+  }
+  function onUp(){
+    handle.removeEventListener("pointermove", onMove);
+    handle.removeEventListener("pointerup", onUp);
+    handle.removeEventListener("pointercancel", onUp);
+    interacting = false;
+    const w = parseInt(el.style.width, 10), h = parseInt(el.style.height, 10);
+    note.width = w; note.height = h;
+    apiSize(note.id, w, h);
+  }
+  handle.addEventListener("pointermove", onMove);
+  handle.addEventListener("pointerup", onUp);
+  handle.addEventListener("pointercancel", onUp);
 }
 
 function render(){

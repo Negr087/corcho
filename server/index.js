@@ -17,6 +17,7 @@ const {
   updateNote,
   updateNotePosition,
   updateNoteDone,
+  updateNoteSize,
   deleteNote,
   setReminder,
 } = require("./db");
@@ -121,6 +122,16 @@ app.patch("/api/notes/:id/position", ensureAuthApi, ensureWriteAccess, (req, res
     return res.status(400).json({ error: "x e y numericos requeridos" });
   }
   const ok = updateNotePosition(req.params.id, req.user.boardOwner, x, y);
+  if (!ok) return res.status(404).json({ error: "no encontrada" });
+  res.status(204).end();
+});
+
+app.patch("/api/notes/:id/size", ensureAuthApi, ensureWriteAccess, (req, res) => {
+  const { width, height } = req.body || {};
+  if (typeof width !== "number" || typeof height !== "number") {
+    return res.status(400).json({ error: "width y height numericos requeridos" });
+  }
+  const ok = updateNoteSize(req.params.id, req.user.boardOwner, width, height);
   if (!ok) return res.status(404).json({ error: "no encontrada" });
   res.status(204).end();
 });
