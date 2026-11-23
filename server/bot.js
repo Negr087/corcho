@@ -6,19 +6,22 @@ const crypto = require("crypto");
 const {
   IMAGES_DIR,
   createNote,
+  getNote,
   listNotes,
   deleteNote,
+  restoreNote,
+  updateNoteDone,
   updateNoteBody,
   setTelegramMessageRef,
   findNoteByTelegramMessage,
   setReminder,
-  getDueReminders,
-  markReminded,
-  getOverdueNags,
-  touchNagged,
+  getMeta,
+  setMeta,
+  deleteMeta,
 } = require("./db");
 const { transcribeAudioFile } = require("./transcribe");
 const { deriveNote, parseReminderTime, detectReminderIntent } = require("./noteHeuristics");
+const { snoozeTarget, noteLabel } = require("./reminders");
 
 async function ocrImage(imagePath) {
   const { createWorker } = require("tesseract.js");
@@ -95,7 +98,14 @@ function startBot() {
   }
 
   const bot = new TelegramBot(token, { polling: true });
-  const lastCreatedByUser = new Map();
+
+  // Ultima nota que creo cada usuario por el bot (para /borrar y /recordar).
+  // Va a la base y no a memoria para que no se pierda si se reinicia el server.
+  const lastCreatedByUser = {
+    get: (userId) => getMeta(`last_note:${userId}`),
+    set: (userId, noteId) => setMeta(`last_note:${userId}`, noteId),
+    delete: (userId) => deleteMeta(`last_note:${userId}`),
+  };
 
   bot
     .setMyCommands([
@@ -121,7 +131,7 @@ function startBot() {
         "Si decís o escribís algo como 'recordame mañana a las 10 que...' lo detecto solo y te pongo el recordatorio. También podés pedirlo aparte:\n\n" +
         "Comandos:\n" +
         "/listar - ver las ultimas notas\n" +
-        "/borrar - borrar la ultima nota que agregue en esta sesion\n" +
+        "/borrar - borrar la ultima nota que mandaste (se puede deshacer)\n" +
         "/recordar <cuando> - poner un recordatorio (respondiendo a una nota, o si no a la ultima). Ej: /recordar mañana a las 10, /recordar en 2 horas, /recordar el lunes a las 9 de la mañana"
     );
   });
@@ -142,15 +152,31 @@ function startBot() {
     const userId = String(msg.from.id);
     const lastId = lastCreatedByUser.get(userId);
     if (!lastId) {
-      bot.sendMessage(msg.chat.id, "No hay nada reciente para borrar en esta sesion.");
+      bot.sendMessage(msg.chat.id, "No hay nada reciente para borrar.");
       return;
     }
-    deleteNote(lastId, ownerFor(msg));
-    bot.sendMessage(msg.chat.id, "Borrada.");
+    const deleted = deleteNote(lastId, ownerFor(msg));
     lastCreatedByUser.delete(userId);
+    if (!deleted) {
+      bot.sendMessage(msg.chat.id, "Esa nota ya no estaba en el corcho.");
+      return;
+    }
+    // queda en la papelera unos dias: se puede deshacer con el boton
+    bot.sendMessage(msg.chat.id, "Borrada.", {
+      reply_markup: { inline_keyboard: [[{ text: "↩️ Deshacer", callback_data: `undo:${lastId}` }]] },
+    });
   });
 
-  bot.onText(/^\/recordar\s+(.+)/i, (msg, match) => {
+  bot.onText(/^\/recordar(@\w+)?\s*$/i, (msg) => {
+    if (!isAllowed(msg)) return;
+    bot.sendMessage(
+      msg.chat.id,
+      "Decime cuándo, por ejemplo: /recordar mañana a las 10, /recordar en 2 horas o /recordar el lunes a las 9 de la mañana.\n\n" +
+        "Respondé (reply) a una nota para ponerle el recordatorio a esa; si no, va a la última que mandaste."
+    );
+  });
+
+  bot.onText(/^\/recordar(?:@\w+)?\s+(.+)/i, (msg, match) => {
     if (!isAllowed(msg)) return;
     const owner = ownerFor(msg);
     const userId = String(msg.from.id);
@@ -179,7 +205,10 @@ function startBot() {
       );
       return;
     }
-    setReminder(targetId, owner, date.getTime());
+    if (!setReminder(targetId, owner, date.getTime())) {
+      bot.sendMessage(msg.chat.id, "Esa nota ya no está en el corcho. Respondé (reply) a otra nota o mandá una nueva.");
+      return;
+    }
     bot.sendMessage(
       msg.chat.id,
       `Listo, te aviso el ${date.toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" })} ⏰`
@@ -299,71 +328,108 @@ function startBot() {
 
   bot.on("polling_error", (err) => console.error("Telegram polling error:", err.message));
 
-  // --- recordatorios ---
-  if (owners.size) {
-    const emailToTelegramId = new Map();
-    for (const [id, email] of owners) emailToTelegramId.set(email, id);
-    const nagIntervalMs = (Number(process.env.REMINDER_NAG_HOURS) || 24) * 60 * 60 * 1000;
+  // --- botones de los mensajes (recordatorios y /borrar) ---
+  // callback_data = "<accion>:<id de nota>"
+  bot.on("callback_query", async (query) => {
+    const owner = owners.get(String(query.from.id));
+    const [action, noteId] = String(query.data || "").split(":");
+    const answer = (text) => bot.answerCallbackQuery(query.id, { text }).catch(() => {});
+    if (!owner || !noteId) return answer("No autorizado");
 
-    setInterval(() => {
-      for (const note of getDueReminders()) {
-        const telegramId = emailToTelegramId.get(note.owner);
-        if (!telegramId) {
-          markReminded(note.id);
-          continue;
-        }
-        bot
-          .sendMessage(telegramId, `⏰ Recordatorio: ${note.title || note.body.slice(0, 80)}`)
-          .catch((err) => console.error("Error mandando recordatorio:", err.message))
-          .finally(() => markReminded(note.id));
-      }
+    // deja el mensaje con un renglon de estado y sin botones
+    const finish = (status) => {
+      if (!query.message) return;
+      bot
+        .editMessageText(`${query.message.text}\n\n${status}`, {
+          chat_id: query.message.chat.id,
+          message_id: query.message.message_id,
+        })
+        .catch(() => {});
+    };
 
-      // avisos de "sigue pendiente" para recordatorios que ya sonaron y
-      // todavia no se marcaron como hechos, hasta que se completen o le
-      // saquen el recordatorio.
-      for (const note of getOverdueNags(nagIntervalMs)) {
-        const telegramId = emailToTelegramId.get(note.owner);
-        if (!telegramId) {
-          touchNagged(note.id);
-          continue;
-        }
-        bot
-          .sendMessage(
-            telegramId,
-            `⏰ Sigue pendiente: ${note.title || note.body.slice(0, 80)}\n\nRespondé a esta nota o marcala como hecha en el corcho, o sacale el recordatorio si ya no hace falta.`
-          )
-          .catch((err) => console.error("Error mandando aviso de vencido:", err.message))
-          .finally(() => touchNagged(note.id));
-      }
-    }, 60 * 1000);
-  }
+    if (action === "undo") {
+      if (!restoreNote(noteId, owner)) return answer("Ya no se puede deshacer");
+      finish("↩️ Restaurada");
+      return answer("Nota restaurada");
+    }
+
+    const note = getNote(noteId, owner);
+    if (!note) {
+      finish("(esta nota ya no está en el corcho)");
+      return answer("Esa nota ya no existe");
+    }
+    if (action === "done") {
+      updateNoteDone(noteId, owner, true);
+      finish("✅ Marcada como hecha");
+      return answer("Hecha ✓");
+    }
+    const target = snoozeTarget(action === "snooze1h" ? "1h" : action === "tomorrow" ? "tomorrow" : null);
+    if (target) {
+      setReminder(noteId, owner, target);
+      const when = new Date(target).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" });
+      finish(`⏰ Pospuesto para el ${when}`);
+      return answer("Pospuesto");
+    }
+    return answer();
+  });
+
+  const reminderButtons = (noteId) => ({
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: "✓ Hecha", callback_data: `done:${noteId}` },
+          { text: "+1 hora", callback_data: `snooze1h:${noteId}` },
+          { text: "Mañana 9hs", callback_data: `tomorrow:${noteId}` },
+        ],
+      ],
+    },
+  });
+
+  // Canal de Telegram para el scheduler de recordatorios (server/reminders.js)
+  const emailToTelegramId = new Map();
+  for (const [id, email] of owners) emailToTelegramId.set(email, id);
+  const reminderChannel = {
+    chatIdFor: (email) => emailToTelegramId.get(email),
+    sendReminder: (chatId, note, kind) =>
+      bot.sendMessage(
+        chatId,
+        kind === "nag"
+          ? `⏰ Sigue pendiente: ${noteLabel(note)}\n\nMarcala como hecha o posponela si todavía no podés.`
+          : `⏰ Recordatorio: ${noteLabel(note)}`,
+        reminderButtons(note.id)
+      ),
+  };
 
   // --- resumen semanal, uno por cada usuario configurado ---
   if (owners.size) {
     const targetDay = process.env.WEEKLY_SUMMARY_DAY !== undefined ? Number(process.env.WEEKLY_SUMMARY_DAY) : 0; // 0 = domingo
     const targetHour = process.env.WEEKLY_SUMMARY_HOUR !== undefined ? Number(process.env.WEEKLY_SUMMARY_HOUR) : 20;
-    let lastSentWeekKey = null;
     function weekKey(d) {
       const onejan = new Date(d.getFullYear(), 0, 1);
       const week = Math.ceil(((d - onejan) / 86400000 + onejan.getDay() + 1) / 7);
       return `${d.getFullYear()}-${week}`;
     }
-    setInterval(() => {
+    // La ultima semana enviada se guarda por usuario en la base: si el server
+    // se reinicia dentro de la hora del resumen, no lo vuelve a mandar.
+    function checkWeeklySummary() {
       const now = new Date();
+      if (now.getDay() !== targetDay || now.getHours() !== targetHour) return;
       const key = weekKey(now);
-      if (now.getDay() === targetDay && now.getHours() === targetHour && lastSentWeekKey !== key) {
-        lastSentWeekKey = key;
-        for (const [telegramId, ownerEmail] of owners) {
-          bot
-            .sendMessage(telegramId, buildWeeklySummary(ownerEmail))
-            .catch((err) => console.error("Error mandando resumen semanal:", err.message));
-        }
+      for (const [telegramId, ownerEmail] of owners) {
+        const metaKey = `weekly_summary:${telegramId}`;
+        if (getMeta(metaKey) === key) continue;
+        setMeta(metaKey, key);
+        bot
+          .sendMessage(telegramId, buildWeeklySummary(ownerEmail))
+          .catch((err) => console.error("Error mandando resumen semanal:", err.message));
       }
-    }, 60 * 60 * 1000);
+    }
+    setInterval(checkWeeklySummary, 5 * 60 * 1000);
+    checkWeeklySummary();
   }
 
   console.log(`Bot de Telegram iniciado (polling). Usuarios configurados: ${owners.size}.`);
-  return bot;
+  return { bot, reminderChannel };
 }
 
 module.exports = { startBot };

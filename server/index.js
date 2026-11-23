@@ -6,12 +6,19 @@ require("node:net").setDefaultAutoSelectFamily(false);
 require("node:dns").setDefaultResultOrder("ipv4first");
 
 require("dotenv").config();
+// Todo lo que tiene que ver con fechas en el server (interpretar "mañana a
+// las 10", el resumen semanal) usa la hora local del proceso. Los VPS suelen
+// venir en UTC, asi que fijamos la zona horaria de los usuarios. Se puede
+// pisar con TZ en el .env.
+process.env.TZ = process.env.TZ || "America/Argentina/Buenos_Aires";
 const express = require("express");
 const path = require("path");
 const fs = require("fs");
+const crypto = require("crypto");
 const session = require("express-session");
 const {
   IMAGES_DIR,
+  getNote,
   listNotes,
   createNote,
   updateNote,
@@ -19,9 +26,14 @@ const {
   updateNoteDone,
   updateNoteSize,
   deleteNote,
+  restoreNote,
   setReminder,
+  addPushSubscription,
+  removePushSubscription,
 } = require("./db");
 const { startBot } = require("./bot");
+const { startReminders, pushEnabled, snoozeTarget } = require("./reminders");
+const { bus } = require("./events");
 const {
   passport,
   configurePassport,
@@ -36,7 +48,12 @@ configurePassport();
 
 const app = express();
 app.set("trust proxy", 1);
-app.use(express.json());
+// El import de backups trae las imagenes embebidas en base64, asi que esa
+// ruta necesita un limite mucho mas grande que el resto.
+const IMPORT_PATH = "/api/notes/import";
+const jsonDefault = express.json();
+const jsonImport = express.json({ limit: "60mb" });
+app.use((req, res, next) => (req.path === IMPORT_PATH ? jsonImport : jsonDefault)(req, res, next));
 
 app.use(
   session({
@@ -90,6 +107,7 @@ app.get("/api/me", (req, res) => {
     name: req.user.name,
     picture: req.user.picture,
     readOnly: !!req.user.readOnly,
+    pushKey: pushEnabled && !req.user.readOnly ? process.env.VAPID_PUBLIC_KEY : null,
   });
 });
 
@@ -108,6 +126,46 @@ app.post("/api/notes", ensureAuthApi, ensureWriteAccess, (req, res) => {
   }
   const note = createNote({ title, body, tags, color, x, y, source: "web", owner: req.user.boardOwner });
   res.status(201).json(note);
+});
+
+const IMAGE_DATA_URL = /^data:image\/(png|jpe?g|gif|webp);base64,([A-Za-z0-9+/=]+)$/;
+
+// Restaura un backup exportado desde la web: conserva fecha, estado,
+// tamaño, recordatorio e imagen de cada nota.
+app.post(IMPORT_PATH, ensureAuthApi, ensureWriteAccess, (req, res) => {
+  const items = req.body && Array.isArray(req.body.notes) ? req.body.notes : null;
+  if (!items) return res.status(400).json({ error: "se esperaba { notes: [...] }" });
+  const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const str = (v) => (typeof v === "string" ? v : "");
+  let imported = 0;
+  for (const n of items) {
+    if (!n || typeof n !== "object" || (!n.title && !n.body && !n.image)) continue;
+    let imagePath = null;
+    const img = typeof n.image === "string" && n.image.match(IMAGE_DATA_URL);
+    if (img) {
+      imagePath = crypto.randomUUID() + "." + (img[1] === "jpeg" ? "jpg" : img[1]);
+      fs.writeFileSync(path.join(IMAGES_DIR, imagePath), Buffer.from(img[2], "base64"));
+    }
+    createNote({
+      title: str(n.title),
+      body: str(n.body),
+      tags: str(n.tags),
+      color: str(n.color) || undefined,
+      source: str(n.source) || "web",
+      x: num(n.x),
+      y: num(n.y),
+      created: num(n.created),
+      done: !!n.done,
+      width: num(n.width),
+      height: num(n.height),
+      remindAt: num(n.remind_at),
+      reminded: !!n.reminded,
+      imagePath,
+      owner: req.user.boardOwner,
+    });
+    imported++;
+  }
+  res.status(201).json({ imported });
 });
 
 app.put("/api/notes/:id", ensureAuthApi, ensureWriteAccess, (req, res) => {
@@ -153,18 +211,71 @@ app.patch("/api/notes/:id/reminder", ensureAuthApi, ensureWriteAccess, (req, res
   res.status(204).end();
 });
 
+// Manda la nota a la papelera; se puede deshacer con /restore durante unos
+// dias (despues se purga sola, ver server/reminders.js).
 app.delete("/api/notes/:id", ensureAuthApi, ensureWriteAccess, (req, res) => {
-  const deleted = deleteNote(req.params.id, req.user.boardOwner);
-  if (!deleted) return res.status(404).json({ error: "no encontrada" });
-  if (deleted.image_path) {
-    fs.unlink(path.join(IMAGES_DIR, deleted.image_path), () => {});
-  }
+  if (!deleteNote(req.params.id, req.user.boardOwner)) return res.status(404).json({ error: "no encontrada" });
   res.status(204).end();
 });
 
+app.post("/api/notes/:id/restore", ensureAuthApi, ensureWriteAccess, (req, res) => {
+  if (!restoreNote(req.params.id, req.user.boardOwner)) return res.status(404).json({ error: "no encontrada" });
+  res.status(204).end();
+});
+
+// Posponer un recordatorio: { kind: "1h" | "tomorrow" }. La cuenta se hace
+// en el server para que use su zona horaria (la de los recordatorios).
+app.patch("/api/notes/:id/snooze", ensureAuthApi, ensureWriteAccess, (req, res) => {
+  const target = snoozeTarget((req.body || {}).kind);
+  if (!target) return res.status(400).json({ error: "kind tiene que ser '1h' o 'tomorrow'" });
+  if (!setReminder(req.params.id, req.user.boardOwner, target)) return res.status(404).json({ error: "no encontrada" });
+  res.json({ remindAt: target });
+});
+
+// --- notificaciones del navegador (Web Push) ---
+app.post("/api/push/subscribe", ensureAuthApi, ensureWriteAccess, (req, res) => {
+  const sub = req.body || {};
+  if (!pushEnabled) return res.status(501).json({ error: "push no configurado en el server" });
+  if (typeof sub.endpoint !== "string" || !/^https:\/\//.test(sub.endpoint) || !sub.keys) {
+    return res.status(400).json({ error: "suscripcion invalida" });
+  }
+  addPushSubscription(req.user.email, { endpoint: sub.endpoint, keys: sub.keys });
+  res.status(204).end();
+});
+
+app.post("/api/push/unsubscribe", ensureAuthApi, (req, res) => {
+  const { endpoint } = req.body || {};
+  if (typeof endpoint === "string") removePushSubscription(endpoint, req.user.email);
+  res.status(204).end();
+});
+
+// --- cambios en vivo (Server-Sent Events) ---
+// La pagina abierta se entera al instante de cualquier cambio en su corcho
+// (incluidas las notas que llegan por Telegram) y recarga las notas.
+app.get("/api/events", ensureAuthApi, (req, res) => {
+  const owner = req.user.boardOwner;
+  res.set({
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.flushHeaders();
+  res.write("retry: 5000\n\n");
+  const onChange = (changedOwner) => {
+    if (changedOwner === owner) res.write("event: change\ndata: {}\n\n");
+  };
+  bus.on("change", onChange);
+  // comentario periodico para que proxies/navegadores no corten la conexion
+  const ping = setInterval(() => res.write(": ping\n\n"), 25000);
+  req.on("close", () => {
+    clearInterval(ping);
+    bus.off("change", onChange);
+  });
+});
+
 app.get("/media/:id", ensureAuthApi, (req, res) => {
-  const notes = listNotes(req.user.boardOwner);
-  const note = notes.find((n) => n.id === req.params.id);
+  const note = getNote(req.params.id, req.user.boardOwner);
   if (!note || !note.image_path) return res.status(404).end();
   res.sendFile(path.join(IMAGES_DIR, note.image_path), (err) => {
     if (err && !res.headersSent) res.status(404).end();
@@ -176,4 +287,5 @@ app.listen(PORT, () => {
   console.log(`corcho escuchando en http://localhost:${PORT}`);
 });
 
-startBot();
+const telegram = startBot();
+startReminders({ telegram: telegram && telegram.reminderChannel });

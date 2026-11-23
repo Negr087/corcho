@@ -4,10 +4,14 @@ Corcho de notas multiusuario con backend propio: cada quien inicia sesión con G
 
 ## Arquitectura
 
-- `server/` — backend Node/Express. Expone `/api/notes` (CRUD, protegido) y corre el bot de Telegram en paralelo.
+- `server/index.js` — backend Node/Express. Expone `/api/notes` (CRUD, protegido), `/api/events` (cambios en vivo por Server-Sent Events) y `/api/push/*` (notificaciones del navegador), y arranca el bot de Telegram y el scheduler de recordatorios.
 - `server/auth.js` — login con Google (Passport) restringido a una lista de emails permitidos.
-- `public/index.html` — la página (protegida, redirige a `/login` si no hay sesión), consume la API.
-- `public/login.html` — pantalla de login con Google.
+- `server/bot.js` — bot de Telegram (texto, audio, fotos con OCR, comandos y botones de los recordatorios).
+- `server/reminders.js` — manda los recordatorios vencidos por Telegram y/o Web Push, insiste con los pendientes y vacía la papelera.
+- `server/noteHeuristics.js` — título/etiquetas automáticos y el parser de fechas en español ("mañana a las 10", "en media hora"...).
+- `server/views/app.html` + `public/app.js` + `public/app.css` — el corcho (la página está protegida y redirige a `/login` si no hay sesión).
+- `server/views/login.html` — pantalla de login con Google.
+- `public/sw.js` — service worker: cachea íconos y muestra las notificaciones push.
 - `data/corcho.db` — SQLite (vía el módulo nativo `node:sqlite` de Node 22+, sin dependencias que compilar). Cada nota tiene un `owner` (email) — las consultas siempre filtran por el usuario logueado.
 - Transcripción de audio: 100% local con Whisper (`@huggingface/transformers`, corre en CPU vía ONNX), sin API keys ni costo por uso. `ffmpeg-static` convierte el audio de Telegram (OGG/Opus) a WAV antes de transcribir.
 
@@ -60,8 +64,30 @@ Corcho de notas multiusuario con backend propio: cada quien inicia sesión con G
 
 - Mandale un **texto** → se crea una nota (la primera línea como título si es corta).
 - Mandale una **nota de voz o audio** → se transcribe localmente y se crea la nota.
+- Mandale una **foto** → se guarda en la nota, con el texto que tenga (OCR) y el pie de foto.
+- Respondé (reply) a un mensaje del bot con texto nuevo → se edita esa nota.
+- "recordame mañana a las 10 que..." → se detecta solo y se pone el recordatorio.
 - `/listar` — últimas 5 notas.
-- `/borrar` — borra la última nota creada en la sesión actual del bot.
+- `/borrar` — borra la última nota que mandaste (con botón para deshacer).
+- `/recordar <cuándo>` — pone un recordatorio a la nota respondida o a la última.
+- Los recordatorios llegan con botones **✓ Hecha / +1 hora / Mañana 9hs**.
+
+## Uso de la web
+
+- Arrastrá el corcho para moverte; rueda + Ctrl (o pellizco con dos dedos en el celular) para hacer zoom.
+- Filtrá por etiqueta o ocultá las notas hechas con los botones de arriba a la izquierda.
+- Al borrar una nota aparece **Deshacer**; las borradas quedan 7 días en la papelera y después se eliminan solas.
+- 🔔 activa las notificaciones de recordatorios en ese dispositivo (requiere `VAPID_*` en `.env`).
+- **Backup** descarga todas las notas (con fotos) en un JSON; **Importar** lo restaura.
+- Los cambios (incluidas las notas que llegan por Telegram) aparecen solos, sin recargar.
+
+## Tests
+
+```
+npm test
+```
+
+Prueban el parser de fechas de los recordatorios (`test/noteHeuristics.test.js`).
 
 ## Notas técnicas
 
@@ -84,4 +110,6 @@ Corriendo en un VPS Windows Server propio (`corcho.sebadev.com.ar`), 24/7, gesti
 
 **Importante:** no corras `npm start` en tu PC local al mismo tiempo que el del VPS — los dos usan el mismo `TELEGRAM_BOT_TOKEN`, y Telegram solo permite un poller activo por bot (el segundo tira error 409 / conflictos de conexión). El VPS es ahora la única instancia que debe hacer polling.
 
-Para redeployar un cambio: copiar los archivos de `server/` y `public/` al VPS (scp o git) y correr `pm2 restart corcho`.
+Para redeployar un cambio: copiar los archivos de `server/`, `public/` y `package*.json` al VPS (scp o git), correr `npm install` si cambiaron las dependencias, y `pm2 restart corcho`.
+
+La zona horaria con la que se interpretan los recordatorios es `America/Argentina/Buenos_Aires` por defecto (se cambia con `TZ` en `.env`), independientemente de la hora del VPS.

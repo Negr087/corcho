@@ -66,25 +66,36 @@ const REMINDER_HINTS = [
 // Devuelve un Date o null si no encontro nada reconocible.
 function parseReminderTime(text, now = new Date()) {
   let raw = stripAccents(text.toLowerCase());
+  // "10.30" es una hora, no un fin de oracion: lo pasamos a "10:30" antes de
+  // limpiar la puntuacion.
+  raw = raw.replace(/\b(\d{1,2})\.(\d{2})\b/g, "$1:$2");
   raw = raw.replace(/[.,;!?¡¿]/g, " ").replace(/\s+/g, " ").trim();
 
-  // "en N horas/minutos" (admite el numero en palabras: "en dos horas")
+  // "en media hora", "en N horas/minutos", "en una hora y media" (admite el
+  // numero en palabras: "en dos horas")
   const relWords = Object.keys(NUMBER_WORDS).join("|");
-  let m = raw.match(new RegExp(`\\ben\\s+(\\d+|${relWords})\\s*(horas?|hs\\.?|h\\b|minutos?|min\\b)`));
+  if (/\ben\s+media\s+hora\b/.test(raw)) return new Date(now.getTime() + 30 * 60000);
+  let m = raw.match(new RegExp(`\\ben\\s+(\\d+|${relWords})\\s*(horas?|hs|h|minutos?|mins?)\\b(\\s+y\\s+media)?`));
   if (m) {
     const n = NUMBER_WORDS[m[1]] ?? parseInt(m[1], 10);
-    const ms = m[2][0] === "h" ? n * 3600000 : n * 60000;
+    const ms = m[2][0] === "h" ? (n + (m[3] ? 0.5 : 0)) * 3600000 : n * 60000;
     return new Date(now.getTime() + ms);
   }
 
-  // dia base: hoy / mañana / pasado mañana / dia de la semana / DD/MM(/YYYY)
+  // dia base: en N dias/semanas / hoy / mañana / pasado mañana / dia de la
+  // semana / DD/MM(/YYYY) / la semana que viene.
   // "mañana" es ambiguo en español (dia siguiente vs. hora del dia, como en
   // "de la mañana") -- para decidir el dia, ignoramos las apariciones que
   // son en realidad un calificador horario.
   const dayDetectionText = raw.replace(/\b(de|por)\s+la\s+manana\b/g, "");
   let base = new Date(now);
   let dayFound = false;
-  if (/\bpasado\s*manana\b/.test(dayDetectionText)) {
+  const relDays = raw.match(new RegExp(`\\ben\\s+(\\d+|${relWords})\\s*(dias?|semanas?)\\b`));
+  if (relDays) {
+    const n = NUMBER_WORDS[relDays[1]] ?? parseInt(relDays[1], 10);
+    base.setDate(base.getDate() + n * (relDays[2][0] === "s" ? 7 : 1));
+    dayFound = true;
+  } else if (/\bpasado\s*manana\b/.test(dayDetectionText)) {
     base.setDate(base.getDate() + 2);
     dayFound = true;
   } else if (/\bmanana\b/.test(dayDetectionText)) {
@@ -109,26 +120,53 @@ function parseReminderTime(text, now = new Date()) {
         const month = parseInt(dm[2], 10) - 1;
         const year = dm[3] ? (dm[3].length === 2 ? 2000 + parseInt(dm[3], 10) : parseInt(dm[3], 10)) : base.getFullYear();
         base = new Date(year, month, day);
+        // sin año explicito y la fecha ya paso este año: es la del año que viene.
+        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        if (!dm[3] && base < startOfToday) base.setFullYear(base.getFullYear() + 1);
         dayFound = true;
       }
     }
+    if (!dayFound && /\b(la\s+)?semana\s+que\s+viene\b|\bproxima\s+semana\b/.test(raw)) {
+      base.setDate(base.getDate() + 7);
+      dayFound = true;
+    }
   }
 
-  // hora: "10:00", "10.30", "a las 10", "10 y media", "a las 10hs",
+  // hora: "10:00", "10.30", "a las 10", "10 y media", "a las 10hs", "10hs",
   // con "de la mañana/tarde/noche" o "am/pm" para desambiguar.
+  const QUAL = "(am|pm|de la manana|de la tarde|de la noche)";
   let hour = null;
   let minute = 0;
-  let tm = raw.match(/\b(\d{1,2}):(\d{2})\s*(am|pm|de la manana|de la tarde|de la noche)?/);
+  let qual = null;
+  let leadingZero = false;
+  let tm = raw.match(new RegExp(`\\b(\\d{1,2}):(\\d{2})\\s*${QUAL}?`));
   if (tm) {
     hour = parseInt(tm[1], 10);
     minute = parseInt(tm[2], 10);
-    if (tm[3] && /tarde|noche|pm/.test(tm[3]) && hour < 12) hour += 12;
-  } else {
-    tm = raw.match(/\b(?:a\s+la?s?\s+)(\d{1,2})\s*(y\s*media)?\s*(am|pm|de la manana|de la tarde|de la noche|hs\.?|horas?)?/);
-    if (tm) {
-      hour = parseInt(tm[1], 10);
-      minute = tm[2] ? 30 : 0;
-      if (tm[3] && /tarde|noche|pm/.test(tm[3]) && hour < 12) hour += 12;
+    qual = tm[3];
+    leadingZero = tm[1].length === 2 && tm[1][0] === "0";
+  } else if (
+    (tm = raw.match(
+      /\b(?:a|para|tipo)\s+la?s?\s+(\d{1,2})\s*(y\s*media)?\s*(am|pm|de la manana|de la tarde|de la noche|hs|horas?)?/
+    ))
+  ) {
+    hour = parseInt(tm[1], 10);
+    minute = tm[2] ? 30 : 0;
+    qual = tm[3] && !/^h/.test(tm[3]) ? tm[3] : null;
+  } else if ((tm = raw.match(new RegExp(`\\b(\\d{1,2})\\s*(?:hs|h)\\b\\s*${QUAL}?`)))) {
+    hour = parseInt(tm[1], 10);
+    qual = tm[2];
+  }
+
+  if (hour !== null && (hour > 23 || minute > 59)) hour = null;
+  if (hour !== null) {
+    if (qual) {
+      if (/tarde|noche|pm/.test(qual) && hour < 12) hour += 12;
+      else if (/noche/.test(qual) && hour === 12) hour = 24; // medianoche: 00:00 del dia siguiente
+      else if (/manana|am/.test(qual) && hour === 12) hour = 0;
+    } else if (!leadingZero && hour >= 1 && hour <= 7) {
+      // "a las 3" sin aclarar casi nunca son las 3 de la madrugada.
+      hour += 12;
     }
   }
 

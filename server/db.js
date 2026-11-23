@@ -1,6 +1,7 @@
 const { DatabaseSync } = require("node:sqlite");
 const path = require("path");
 const fs = require("fs");
+const { emitChange } = require("./events");
 
 const dataDir = path.join(__dirname, "..", "data");
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
@@ -47,6 +48,9 @@ if (!existingColumns.includes("reminded")) db.exec("ALTER TABLE notes ADD COLUMN
 if (!existingColumns.includes("last_nagged_at")) db.exec("ALTER TABLE notes ADD COLUMN last_nagged_at INTEGER");
 if (!existingColumns.includes("width")) db.exec("ALTER TABLE notes ADD COLUMN width REAL");
 if (!existingColumns.includes("height")) db.exec("ALTER TABLE notes ADD COLUMN height REAL");
+// borrado "blando": la nota va a la papelera y se puede deshacer; se purga
+// de verdad despues de unos dias (ver purgeDeletedNotes).
+if (!existingColumns.includes("deleted_at")) db.exec("ALTER TABLE notes ADD COLUMN deleted_at INTEGER");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
@@ -56,6 +60,27 @@ db.exec(`
   )
 `);
 db.prepare("DELETE FROM sessions WHERE expires < ?").run(Date.now());
+
+// Suscripciones de Web Push (notificaciones del navegador), una por
+// dispositivo/navegador en el que el usuario las activo.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS push_subscriptions (
+    endpoint TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    subscription TEXT NOT NULL,
+    created INTEGER NOT NULL
+  )
+`);
+
+// Estado chico que tiene que sobrevivir a un reinicio del server (ultima
+// nota creada por cada usuario del bot, ultima semana en que se mando el
+// resumen, etc).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT
+  )
+`);
 
 for (const row of db.prepare("SELECT id FROM notes WHERE x IS NULL OR y IS NULL").all()) {
   const pos = scatterPosition();
@@ -68,13 +93,22 @@ if (process.env.OWNER_EMAIL) {
   db.prepare("UPDATE notes SET owner = ? WHERE owner IS NULL").run(process.env.OWNER_EMAIL);
 }
 
+// Avisa a las paginas abiertas solo si la escritura toco alguna fila.
+function changed(res, owner) {
+  if (res.changes > 0) {
+    emitChange(owner);
+    return true;
+  }
+  return false;
+}
+
 function genId() {
   return Date.now() + "-" + Math.random().toString(36).slice(2, 6);
 }
 
 function scatterPosition(owner) {
   const last = owner
-    ? db.prepare("SELECT x, y FROM notes WHERE owner = ? ORDER BY created DESC LIMIT 1").get(owner)
+    ? db.prepare("SELECT x, y FROM notes WHERE owner = ? AND deleted_at IS NULL ORDER BY created DESC LIMIT 1").get(owner)
     : null;
   if (last) {
     // al lado de la ultima nota clavada, con un poco de jitter para que no
@@ -90,8 +124,12 @@ function scatterPosition(owner) {
   };
 }
 
+function getNote(id, owner) {
+  return db.prepare("SELECT * FROM notes WHERE id = ? AND owner = ? AND deleted_at IS NULL").get(id, owner);
+}
+
 function listNotes(owner) {
-  return db.prepare("SELECT * FROM notes WHERE owner = ? ORDER BY created DESC").all(owner);
+  return db.prepare("SELECT * FROM notes WHERE owner = ? AND deleted_at IS NULL ORDER BY created DESC").all(owner);
 }
 
 function createNote({
@@ -106,13 +144,20 @@ function createNote({
   telegramChatId,
   telegramMessageId,
   imagePath,
+  created,
+  done,
+  width,
+  height,
+  remindAt,
+  reminded,
 }) {
   const id = genId();
-  const created = Date.now();
-  const pos = x !== undefined && y !== undefined ? { x, y } : scatterPosition(owner);
+  if (typeof created !== "number") created = Date.now();
+  const pos = typeof x === "number" && typeof y === "number" ? { x, y } : scatterPosition(owner);
   db.prepare(
-    `INSERT INTO notes (id, title, body, tags, color, source, created, x, y, owner, telegram_chat_id, telegram_message_id, image_path)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO notes (id, title, body, tags, color, source, created, x, y, owner, telegram_chat_id, telegram_message_id, image_path,
+                        done, width, height, remind_at, reminded)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     title,
@@ -126,13 +171,19 @@ function createNote({
     owner,
     telegramChatId || null,
     telegramMessageId || null,
-    imagePath || null
+    imagePath || null,
+    done ? 1 : 0,
+    typeof width === "number" ? width : null,
+    typeof height === "number" ? height : null,
+    typeof remindAt === "number" ? remindAt : null,
+    reminded ? 1 : 0
   );
+  emitChange(owner);
   return db.prepare("SELECT * FROM notes WHERE id = ?").get(id);
 }
 
 function updateNote(id, owner, { title, body, tags, color, x, y }) {
-  const existing = db.prepare("SELECT * FROM notes WHERE id = ? AND owner = ?").get(id, owner);
+  const existing = getNote(id, owner);
   if (!existing) return null;
   const next = {
     title: title !== undefined ? title : existing.title,
@@ -152,22 +203,23 @@ function updateNote(id, owner, { title, body, tags, color, x, y }) {
     id,
     owner
   );
+  emitChange(owner);
   return db.prepare("SELECT * FROM notes WHERE id = ?").get(id);
 }
 
 function updateNotePosition(id, owner, x, y) {
   const res = db.prepare("UPDATE notes SET x = ?, y = ? WHERE id = ? AND owner = ?").run(x, y, id, owner);
-  return res.changes > 0;
+  return changed(res, owner);
 }
 
 function updateNoteDone(id, owner, done) {
   const res = db.prepare("UPDATE notes SET done = ? WHERE id = ? AND owner = ?").run(done ? 1 : 0, id, owner);
-  return res.changes > 0;
+  return changed(res, owner);
 }
 
 function updateNoteSize(id, owner, width, height) {
   const res = db.prepare("UPDATE notes SET width = ?, height = ? WHERE id = ? AND owner = ?").run(width, height, id, owner);
-  return res.changes > 0;
+  return changed(res, owner);
 }
 
 function setTelegramMessageRef(id, chatId, messageId) {
@@ -180,12 +232,14 @@ function setTelegramMessageRef(id, chatId, messageId) {
 
 function findNoteByTelegramMessage(owner, chatId, messageId) {
   return db
-    .prepare("SELECT * FROM notes WHERE owner = ? AND telegram_chat_id = ? AND telegram_message_id = ?")
+    .prepare(
+      "SELECT * FROM notes WHERE owner = ? AND telegram_chat_id = ? AND telegram_message_id = ? AND deleted_at IS NULL"
+    )
     .get(owner, String(chatId), String(messageId));
 }
 
 function updateNoteBody(id, owner, { title, body, tags }) {
-  const existing = db.prepare("SELECT * FROM notes WHERE id = ? AND owner = ?").get(id, owner);
+  const existing = getNote(id, owner);
   if (!existing) return null;
   db.prepare("UPDATE notes SET title = ?, body = ?, tags = ? WHERE id = ?").run(
     title !== undefined ? title : existing.title,
@@ -193,28 +247,57 @@ function updateNoteBody(id, owner, { title, body, tags }) {
     tags !== undefined ? tags : existing.tags,
     id
   );
+  emitChange(owner);
   return db.prepare("SELECT * FROM notes WHERE id = ?").get(id);
 }
 
+// Manda la nota a la papelera (se puede deshacer con restoreNote).
 function deleteNote(id, owner) {
-  const existing = db.prepare("SELECT image_path FROM notes WHERE id = ? AND owner = ?").get(id, owner);
-  const res = db.prepare("DELETE FROM notes WHERE id = ? AND owner = ?").run(id, owner);
-  return res.changes > 0 ? existing : null;
+  const res = db
+    .prepare("UPDATE notes SET deleted_at = ? WHERE id = ? AND owner = ? AND deleted_at IS NULL")
+    .run(Date.now(), id, owner);
+  return changed(res, owner);
+}
+
+function restoreNote(id, owner) {
+  const res = db
+    .prepare("UPDATE notes SET deleted_at = NULL WHERE id = ? AND owner = ? AND deleted_at IS NOT NULL")
+    .run(id, owner);
+  return changed(res, owner);
+}
+
+// Borra definitivamente lo que esta en la papelera hace mas de
+// `olderThanMs`. Devuelve las imagenes que quedaron huerfanas para que el
+// que llama las saque del disco.
+function purgeDeletedNotes(olderThanMs) {
+  const cutoff = Date.now() - olderThanMs;
+  const images = db
+    .prepare("SELECT image_path FROM notes WHERE deleted_at IS NOT NULL AND deleted_at < ? AND image_path IS NOT NULL")
+    .all(cutoff)
+    .map((r) => r.image_path);
+  db.prepare("DELETE FROM notes WHERE deleted_at IS NOT NULL AND deleted_at < ?").run(cutoff);
+  return images;
 }
 
 function setReminder(id, owner, remindAt) {
   const res = db
     .prepare("UPDATE notes SET remind_at = ?, reminded = 0 WHERE id = ? AND owner = ?")
     .run(remindAt, id, owner);
-  return res.changes > 0;
+  return changed(res, owner);
 }
 
 function getDueReminders() {
-  return db.prepare("SELECT * FROM notes WHERE remind_at IS NOT NULL AND reminded = 0 AND remind_at <= ?").all(Date.now());
+  return db
+    .prepare(
+      "SELECT * FROM notes WHERE remind_at IS NOT NULL AND reminded = 0 AND remind_at <= ? AND deleted_at IS NULL"
+    )
+    .all(Date.now());
 }
 
 function markReminded(id) {
   db.prepare("UPDATE notes SET reminded = 1, last_nagged_at = ? WHERE id = ?").run(Date.now(), id);
+  const row = db.prepare("SELECT owner FROM notes WHERE id = ?").get(id);
+  if (row) emitChange(row.owner);
 }
 
 // Notas cuyo recordatorio ya sono pero siguen sin marcarse hechas: hay que
@@ -224,7 +307,7 @@ function getOverdueNags(intervalMs) {
   return db
     .prepare(
       `SELECT * FROM notes
-       WHERE remind_at IS NOT NULL AND reminded = 1 AND done = 0
+       WHERE remind_at IS NOT NULL AND reminded = 1 AND done = 0 AND deleted_at IS NULL
          AND (last_nagged_at IS NULL OR last_nagged_at <= ?)`
     )
     .all(Date.now() - intervalMs);
@@ -232,6 +315,40 @@ function getOverdueNags(intervalMs) {
 
 function touchNagged(id) {
   db.prepare("UPDATE notes SET last_nagged_at = ? WHERE id = ?").run(Date.now(), id);
+}
+
+function addPushSubscription(owner, subscription) {
+  db.prepare(
+    `INSERT INTO push_subscriptions (endpoint, owner, subscription, created) VALUES (?, ?, ?, ?)
+     ON CONFLICT(endpoint) DO UPDATE SET owner = excluded.owner, subscription = excluded.subscription`
+  ).run(subscription.endpoint, owner, JSON.stringify(subscription), Date.now());
+}
+
+function removePushSubscription(endpoint, owner) {
+  if (owner) db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ? AND owner = ?").run(endpoint, owner);
+  else db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?").run(endpoint);
+}
+
+function listPushSubscriptions(owner) {
+  return db
+    .prepare("SELECT subscription FROM push_subscriptions WHERE owner = ?")
+    .all(owner)
+    .map((r) => JSON.parse(r.subscription));
+}
+
+function getMeta(key) {
+  const row = db.prepare("SELECT value FROM meta WHERE key = ?").get(key);
+  return row ? row.value : null;
+}
+
+function setMeta(key, value) {
+  db.prepare(
+    "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).run(key, String(value));
+}
+
+function deleteMeta(key) {
+  db.prepare("DELETE FROM meta WHERE key = ?").run(key);
 }
 
 function getSession(sid) {
@@ -254,6 +371,7 @@ function pruneExpiredSessions() {
 
 module.exports = {
   IMAGES_DIR,
+  getNote,
   listNotes,
   createNote,
   updateNote,
@@ -264,11 +382,19 @@ module.exports = {
   setTelegramMessageRef,
   findNoteByTelegramMessage,
   deleteNote,
+  restoreNote,
+  purgeDeletedNotes,
   setReminder,
   getDueReminders,
   markReminded,
   getOverdueNags,
   touchNagged,
+  getMeta,
+  setMeta,
+  deleteMeta,
+  addPushSubscription,
+  removePushSubscription,
+  listPushSubscriptions,
   getSession,
   setSession,
   destroySession,
