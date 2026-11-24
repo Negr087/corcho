@@ -100,7 +100,15 @@ Prueban el parser de fechas de los recordatorios (`test/noteHeuristics.test.js`)
 
 ## Producción (Docker en nodo propio)
 
-Corre 24/7 en un nodo Linux propio con **Docker Compose**, en `~/corcho` (un clon de este repo). El `Dockerfile` y el `docker-compose.yml` viven solo en el nodo, no en el repo. El `.env` de producción también está en el nodo.
+Corre 24/7 en un nodo propio (Umbrel) con **Docker Compose**, en `~/corcho` (un clon de este repo). El `Dockerfile` y el `docker-compose.yml` viven solo en el nodo, no en el repo. El `.env` de producción también está en el nodo.
+
+Cómo está armado:
+
+- **Imagen:** `node:24-bookworm-slim`. Corre `npm ci --omit=dev` al construir y arranca con `node --experimental-sqlite server/index.js`.
+- **Puerto:** la app escucha en el 3000 del contenedor, publicado como **3010** en el nodo.
+- **Datos:** `./data` del nodo está montado en `/app/data`, así que la base y las fotos sobreviven a los rebuilds.
+- **Configuración:** sale del `.env` del nodo (`env_file: .env`).
+- **Transcripción:** el compose fija `TRANSCRIBE_REMOTE_URL=http://host.docker.internal:4001`, o sea que los audios se transcriben en el `transcribe-service/` que corre en el propio nodo, fuera del contenedor.
 
 **Redeployar un cambio:**
 
@@ -121,7 +129,7 @@ En los logs tiene que aparecer `corcho escuchando en ...` y `Recordatorios activ
 
 **Cosas a tener en cuenta:**
 
-- **Datos:** la base (`data/corcho.db`) y las fotos (`data/images/`) tienen que estar en un volumen o bind mount del contenedor. Si no, se pierden cada vez que se reconstruye la imagen.
+- **Datos:** no saques el volumen `./data:/app/data` del compose. Sin él, la base y las fotos se pierden en cada rebuild.
 - **Zona horaria:** los recordatorios se interpretan en `America/Argentina/Buenos_Aires` por defecto, sin importar la hora del nodo. Si el `docker-compose.yml` o el `.env` definen `TZ` (por ejemplo `TZ=UTC`), la app usa ese valor. Para cambiarla, poné `TZ=` con la zona que quieras.
 - **Un solo bot a la vez:** no corras `npm start` en tu PC al mismo tiempo que el contenedor. Los dos usan el mismo `TELEGRAM_BOT_TOKEN` y Telegram solo permite un poller activo por bot (el segundo da error 409). El nodo es la única instancia que debe hacer polling.
 - **Notificaciones del navegador:** necesitan que la web se sirva por HTTPS.
