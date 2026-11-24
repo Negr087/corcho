@@ -114,8 +114,23 @@ app.get("/api/me", (req, res) => {
   });
 });
 
+// La pagina pide app.css/app.js con una huella de su contenido en la URL
+// (?v=...). Cloudflare y el navegador guardan esos archivos varias horas; al
+// cambiar el contenido cambia la URL, asi que despues de cada deploy se baja
+// la version nueva sin esperar a que venza la cache.
+function assetVersion(file) {
+  const content = fs.readFileSync(path.join(__dirname, "..", "public", file));
+  return crypto.createHash("sha1").update(content).digest("hex").slice(0, 10);
+}
+const APP_HTML = fs
+  .readFileSync(path.join(__dirname, "views", "app.html"), "utf8")
+  .replace('href="/app.css"', `href="/app.css?v=${assetVersion("app.css")}"`)
+  .replace('src="/app.js"', `src="/app.js?v=${assetVersion("app.js")}"`);
+
 app.get("/", ensureAuthPage, (req, res) => {
-  res.sendFile(path.join(__dirname, "views", "app.html"));
+  // la pagina en si nunca se guarda en cache: es la que trae las URLs nuevas
+  res.set("Cache-Control", "no-cache");
+  res.type("html").send(APP_HTML);
 });
 
 app.get("/api/notes", ensureAuthApi, (req, res) => {
