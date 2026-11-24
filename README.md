@@ -75,10 +75,13 @@ Corcho de notas multiusuario con backend propio: cada quien inicia sesión con G
 ## Uso de la web
 
 - Arrastrá el corcho para moverte; rueda + Ctrl (o pellizco con dos dedos en el celular) para hacer zoom.
+- Cada nota tiene su papel según lo que dice: las fotos son **polaroids**, las compras **tickets**, las tareas y recordatorios **fichas**, lo corto **post-its** y lo largo **hojas de cuaderno**. Se puede elegir otro a mano en "Tipo de papel" al editar.
+- **Hilos rojos:** arrastrá la chinche (o la cinta o el clip) de una nota hasta otra para unirlas. Tocá un hilo para cortarlo. Al abrir una nota se ven las notas con las que está conectada y podés saltar a ellas.
+- Las notas hechas llevan un sello de **HECHO**.
 - Filtrá por etiqueta o ocultá las notas hechas con los botones de arriba a la izquierda.
 - Al borrar una nota aparece **Deshacer**; las borradas quedan 7 días en la papelera y después se eliminan solas.
 - 🔔 activa las notificaciones de recordatorios en ese dispositivo (requiere `VAPID_*` en `.env`).
-- **Backup** descarga todas las notas (con fotos) en un JSON; **Importar** lo restaura.
+- **Backup** descarga todas las notas (con fotos e hilos) en un JSON; **Importar** lo restaura.
 - Los cambios (incluidas las notas que llegan por Telegram) aparecen solos, sin recargar.
 
 ## Tests

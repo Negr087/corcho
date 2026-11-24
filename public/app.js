@@ -24,6 +24,7 @@ const COLORS = [
   "#BFD8D2","#F5B8B0","#FFE29A","#B8CDE0","#D9B8D4","#C9B79C","#A8C3A0","#E8A87C"
 ];
 let notes = [];
+let links = []; // hilos rojos: { id, a, b }
 let editingId = null;
 let pickedColor = COLORS[0];
 let pendingPos = null;
@@ -61,8 +62,9 @@ function fitAll(){
   const rect = $("#viewport").getBoundingClientRect();
   if(!notes.length){ zoom = 1; pan.x = rect.width/2; pan.y = rect.height/2; applyTransform(); saveView(); return; }
   const xs = notes.map(n=>n.x ?? 0), ys = notes.map(n=>n.y ?? 0);
-  const minX = Math.min(...xs) - 150, maxX = Math.max(...xs) + 150;
-  const minY = Math.min(...ys) - 150, maxY = Math.max(...ys) + 150;
+  // margen generoso: las notas miden hasta ~270px y arriba estan los filtros
+  const minX = Math.min(...xs) - 190, maxX = Math.max(...xs) + 190;
+  const minY = Math.min(...ys) - 260, maxY = Math.max(...ys) + 190;
   const w = Math.max(1, maxX - minX), h = Math.max(1, maxY - minY);
   zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.min(rect.width / w, rect.height / h)));
   const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
@@ -118,8 +120,9 @@ async function loadMe(){
   setupPush(me.pushKey);
 }
 async function loadNotes(){
-  const r = checkAuth(await fetch("/api/notes"));
-  notes = await r.json();
+  const [rn, rl] = await Promise.all([fetch("/api/notes"), fetch("/api/links")]);
+  notes = await checkAuth(rn).json();
+  links = await checkAuth(rl).json();
 }
 async function apiCreate(note){
   const r = checkAuth(await fetch("/api/notes", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(note) }));
@@ -211,18 +214,58 @@ function anyOverlayOpen(){
   return $("#editOverlay").classList.contains("open") || $("#detailOverlay").classList.contains("open");
 }
 
+// --- cada nota en su papel ---
+const PAPERS = {
+  "":         "Automático (según lo que diga)",
+  card:       "Tarjeta",
+  postit:     "Post-it",
+  notebook:   "Hoja de cuaderno",
+  index:      "Ficha",
+  receipt:    "Ticket",
+  polaroid:   "Polaroid",
+};
+const PIN_COLORS = ["#D63B2F", "#2F6FD6", "#2E9E5B", "#E0B21B", "#D97A3F", "#8A4FC7", "#2B2B2B"];
+const TAPE_COLORS = ["rgba(240,226,190,.72)", "rgba(196,224,214,.72)", "rgba(244,196,196,.72)", "rgba(206,214,240,.72)"];
+// numero estable a partir del id: la misma nota siempre sale igual
+function hash(s, salt = 0){ let h = 7 + salt; for (const c of s) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; }
+// El papel sale del contenido, salvo que se haya elegido uno a mano.
+function paperOf(n){
+  if (n.paper && PAPERS[n.paper]) return n.paper;
+  if (n.image_path) return "polaroid";
+  const tags = norm(n.tags);
+  if (/\bcompras?\b/.test(tags)) return "receipt";
+  if (n.remind_at || /\btareas?\b/.test(tags)) return "index";
+  const len = ((n.title || "") + (n.body || "")).length;
+  if (len > 220) return "notebook";
+  if (len <= 90) return "postit";
+  return ["card", "postit", "notebook"][hash(n.id) % 3];
+}
+function fastenerHtml(n, paper){
+  const title = isReadOnly ? "" : ` title="Arrastrá desde acá hasta otra nota para unirlas con un hilo"`;
+  if (paper === "receipt"){
+    return `<div class="fastener clip"${title}><svg viewBox="0 0 20 50"><path d="M6 15v22a4 4 0 0 0 8 0V9a6 6 0 0 0-12 0v31a8 8 0 0 0 16 0V16" fill="none" stroke="#8d949b" stroke-width="2.2" stroke-linecap="round"/></svg></div>`;
+  }
+  if (paper === "polaroid" || hash(n.id, 3) % 5 === 0){
+    const tape = TAPE_COLORS[hash(n.id, 5) % TAPE_COLORS.length];
+    const tilt = (hash(n.id, 9) % 11) - 5;
+    return `<div class="fastener tape" style="--tape:${tape};--tilt:${tilt}deg"${title}></div>`;
+  }
+  return `<div class="fastener pin" style="--pin:${PIN_COLORS[hash(n.id, 1) % PIN_COLORS.length]}"${title}></div>`;
+}
 function createCardEl(n){
   const el = document.createElement("div");
-  el.className = "card" + (n.done ? " done" : "") + (n.width || n.height ? " sized" : "");
+  const paper = paperOf(n);
+  el.className = `card paper-${paper}` + (n.done ? " done" : "") + (n.width || n.height ? " sized" : "");
   el.dataset.id = n.id;
-  el.style.background = n.color || COLORS[0];
+  el.style.setProperty("--pc", n.color || COLORS[0]);
   el.style.left = (n.x ?? 0) + "px";
   el.style.top = (n.y ?? 0) + "px";
   if (n.width) el.style.width = n.width + "px";
   if (n.height) el.style.height = n.height + "px";
   gsap.set(el, { xPercent: -50, yPercent: -50, rotation: rot(n.id) });
   el.innerHTML = `
-    <div class="pin"></div>
+    ${fastenerHtml(n, paper)}
+    ${n.done ? `<div class="stamp">HECHO</div>` : ""}
     <button class="del" data-del="${n.id}" title="Sacar del corcho">×</button>
     <button class="check" data-done="${n.id}" title="Marcar como hecha">✓</button>
     ${n.image_path?`<img class="thumb" src="/media/${n.id}" alt="">`:""}
@@ -245,6 +288,7 @@ function onCardPointerDown(e, note, el){
   if (e.pointerType === "mouse" && e.button !== 0) return;
   e.stopPropagation();
   if (isReadOnly){ openDetail(note, el); return; }
+  if (e.target.closest(".fastener")){ startLinking(e, note, el); return; }
   const startX = e.clientX, startY = e.clientY;
   const startLeft = note.x ?? 0, startTop = note.y ?? 0;
   let moved = false;
@@ -262,6 +306,7 @@ function onCardPointerDown(e, note, el){
     if (moved){
       el.style.left = (startLeft + dx) + "px";
       el.style.top = (startTop + dy) + "px";
+      drawStrings();
     }
   }
   function onUp(ev){
@@ -306,6 +351,7 @@ function onResizePointerDown(e, note, el){
     const h = Math.min(MAX_CARD_H, Math.max(MIN_CARD_H, Math.round(startH + dy)));
     el.style.width = w + "px";
     el.style.height = h + "px";
+    drawStrings();
     el.classList.add("sized");
   }
   function onUp(){
@@ -349,6 +395,10 @@ function render(){
       });
     }
   }
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.classList.add("strings");
+  svg.id = "strings";
+  world.appendChild(svg);
   knownNoteIds = new Set(notes.map(n => n.id));
   hasRenderedOnce = true;
   renderFilterChips();
@@ -393,6 +443,126 @@ $("#filters").addEventListener("click", (e) => {
   renderFilterChips();
   applySearchFilter();
 });
+// --- hilos rojos ---
+const SVG_NS = "http://www.w3.org/2000/svg";
+function cardEl(id){ return document.querySelector(`.card[data-id="${CSS.escape(id)}"]`); }
+// Punto de donde sale el hilo: el centro de arriba de la nota (donde esta la
+// chinche), teniendo en cuenta que cada nota esta un poco girada.
+function anchorOf(el){
+  const n = notes.find(x => x.id === el.dataset.id);
+  const angle = (n ? rot(n.id) : 0) * Math.PI / 180;
+  const cx = parseFloat(el.style.left) || 0, cy = parseFloat(el.style.top) || 0;
+  const h = el.offsetHeight;
+  return { x: cx + (h / 2) * Math.sin(angle), y: cy - (h / 2) * Math.cos(angle) };
+}
+// Un hilo tensado pero no del todo: cuelga un poco por su propio peso.
+function stringPath(a, b){
+  const dist = Math.hypot(b.x - a.x, b.y - a.y);
+  const sag = Math.min(90, 12 + dist * 0.12);
+  const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2 + sag;
+  return `M${a.x.toFixed(1)},${a.y.toFixed(1)} Q${mx.toFixed(1)},${my.toFixed(1)} ${b.x.toFixed(1)},${b.y.toFixed(1)}`;
+}
+function svgEl(tag, attrs){
+  const e = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  return e;
+}
+function drawStrings(){
+  const svg = document.getElementById("strings");
+  if (!svg) return;
+  svg.querySelectorAll("g[data-link]").forEach(g => g.remove());
+  for (const l of links){
+    const ea = cardEl(l.a), eb = cardEl(l.b);
+    if (!ea || !eb || ea.style.display === "none" || eb.style.display === "none") continue;
+    const a = anchorOf(ea), b = anchorOf(eb), d = stringPath(a, b);
+    const g = svgEl("g", { "data-link": l.id });
+    // si alguna punta no coincide con la busqueda, el hilo tambien se apaga
+    if (ea.style.opacity === "0.2" || eb.style.opacity === "0.2") g.setAttribute("opacity", "0.2");
+    g.append(
+      svgEl("path", { d, class: "string-shadow", transform: "translate(2 5)" }),
+      svgEl("path", { d, class: "string" }),
+      svgEl("path", { d, class: "string-hi" }),
+      svgEl("circle", { cx: a.x, cy: a.y, r: 3.2, class: "knot" }),
+      svgEl("circle", { cx: b.x, cy: b.y, r: 3.2, class: "knot" }),
+      svgEl("path", { d, class: "string-hit", "data-cut": l.id }),
+    );
+    svg.insertBefore(g, svg.firstChild);
+  }
+}
+async function apiLink(a, b){
+  const r = checkAuth(await fetch("/api/links", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ a, b }) }));
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+async function apiUnlink(id){
+  checkAuth(await fetch("/api/links/" + encodeURIComponent(id), { method:"DELETE" }));
+}
+async function cutLink(id){
+  const prev = links.find(l => l.id === id);
+  links = links.filter(l => l.id !== id);
+  drawStrings();
+  await apiUnlink(id);
+  if (prev) toast("Hilo cortado", {
+    action: "Deshacer", duration: 5000,
+    onAction: async () => { const l = await apiLink(prev.a, prev.b); links.push(l); drawStrings(); },
+  });
+}
+// Arrastrar desde la chinche (o cinta/clip) de una nota hasta otra las une.
+// Si se suelta sin moverse, es un toque comun: abre la nota.
+function startLinking(e, note, el){
+  e.preventDefault();
+  const handle = e.target.closest(".fastener");
+  handle.setPointerCapture(e.pointerId);
+  interacting = true;
+  const svg = document.getElementById("strings");
+  const from = anchorOf(el);
+  const temp = svgEl("path", { class: "string temp" });
+  svg.appendChild(temp);
+  const startX = e.clientX, startY = e.clientY;
+  let moved = false, target = null;
+  function targetAt(ev){
+    const hit = document.elementFromPoint(ev.clientX, ev.clientY);
+    const c = hit && hit.closest(".card");
+    return c && c !== el && c.style.display !== "none" ? c : null;
+  }
+  function onMove(ev){
+    if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) > 4) moved = true;
+    if (!moved) return;
+    const rect = viewport.getBoundingClientRect();
+    const p = screenToWorld(ev.clientX - rect.left, ev.clientY - rect.top);
+    const t = targetAt(ev);
+    if (t !== target){
+      if (target) target.classList.remove("link-target");
+      target = t;
+      if (target) target.classList.add("link-target");
+    }
+    temp.setAttribute("d", stringPath(from, target ? anchorOf(target) : p));
+  }
+  async function onUp(){
+    handle.removeEventListener("pointermove", onMove);
+    handle.removeEventListener("pointerup", onUp);
+    handle.removeEventListener("pointercancel", onUp);
+    temp.remove();
+    interacting = false;
+    if (target) target.classList.remove("link-target");
+    if (!moved){ openDetail(note, el); return; }
+    if (!target) return;
+    const otherId = target.dataset.id;
+    if (links.some(l => (l.a === note.id && l.b === otherId) || (l.b === note.id && l.a === otherId))){
+      toast("Esas notas ya están unidas");
+      return;
+    }
+    try{
+      links.push(await apiLink(note.id, otherId));
+      drawStrings();
+      toast("Notas unidas con un hilo 🧵");
+    }catch(err){ toast("No se pudo unir las notas"); }
+  }
+  handle.addEventListener("pointermove", onMove);
+  handle.addEventListener("pointerup", onUp);
+  handle.addEventListener("pointercancel", onUp);
+}
+
 function applySearchFilter(){
   const q = norm($("#search").value.trim());
   const cards = $("#world").querySelectorAll(".card");
@@ -406,6 +576,7 @@ function applySearchFilter(){
     el.style.pointerEvents = isMatch ? "auto" : "none";
     if (shown){ visible++; if (isMatch) matches++; }
   });
+  drawStrings();
   const filtered = visible !== notes.length;
   $("#count").textContent = notes.length
     ? (filtered ? `${visible} de ${notes.length} notas` : `${notes.length} nota${notes.length>1?"s":""}`) + (q ? ` · ${matches} coinciden` : "")
@@ -438,11 +609,27 @@ function openEditor(note){
   $("#bodyInput").value = note ? note.body : "";
   $("#tagsInput").value = note ? note.tags : "";
   $("#reminderInput").value = note ? toDatetimeLocal(note.remind_at) : "";
+  $("#paperInput").innerHTML = Object.entries(PAPERS).map(([k, label]) => `<option value="${k}">${label}</option>`).join("");
+  $("#paperInput").value = note && note.paper && PAPERS[note.paper] ? note.paper : "";
   $("#colorRow").innerHTML = COLORS.map(c=>`<span data-c="${c}" style="background:${c}" class="${c===pickedColor?'sel':''}"></span>`).join("");
   $("#editOverlay").classList.add("open");
   setTimeout(()=>$("#bodyInput").focus(),50);
 }
 
+function linksBoxHtml(n){
+  const mine = links
+    .filter(l => l.a === n.id || l.b === n.id)
+    .map(l => ({ link: l, other: notes.find(x => x.id === (l.a === n.id ? l.b : l.a)) }))
+    .filter(x => x.other);
+  if (!mine.length){
+    return isReadOnly ? "" : `<div class="links-box"><div class="tip">🧵 Tip: arrastrá la chinche de esta nota hasta otra para unirlas con un hilo rojo.</div></div>`;
+  }
+  return `<div class="links-box"><div class="lbl">Conectada con</div>${mine.map(({ link, other }) => `
+    <span class="link-chip">
+      <button class="go" data-goto="${esc(other.id)}" title="Ir a esa nota">${esc(other.title || other.body.slice(0, 40) || "Nota")}</button>
+      ${isReadOnly ? "" : `<button class="cut" data-unlink="${esc(link.id)}" title="Cortar el hilo">×</button>`}
+    </span>`).join("")}</div>`;
+}
 function openDetail(n, sourceEl){
   $("#detailContent").innerHTML=`
     ${n.image_path?`<img src="/media/${n.id}" style="width:100%;border-radius:12px;margin-bottom:14px;display:block">`:""}
@@ -451,6 +638,7 @@ function openDetail(n, sourceEl){
     ${n.tags?`<div style="font-family:var(--hand);font-size:18px;color:var(--accent-dk);margin-top:10px">${esc(n.tags)}</div>`:""}
     ${n.remind_at?`<div style="font-size:13px;font-weight:600;color:var(--accent-dk);margin-top:10px">⏰ ${fdatetime(n.remind_at)}${n.reminded?" (ya avisado)":""}</div>`:""}
     <div style="font-size:11px;color:var(--mut);margin-top:8px">${srcBadge(n)}${fdate(n.created)}</div>
+    ${linksBoxHtml(n)}
     <div class="row">
       ${isReadOnly ? "" : `<button class="btn ghost" data-toggledone="${n.id}">${n.done?"Marcar pendiente":"Marcar hecha"}</button>`}
       ${isReadOnly ? "" : `<button class="btn ghost" data-edit="${n.id}">Editar</button>`}
@@ -492,14 +680,15 @@ $("#saveEdit").onclick=async ()=>{
   const title=$("#titleInput").value.trim();
   const body=$("#bodyInput").value.trim();
   const tags=$("#tagsInput").value.trim();
+  const paper=$("#paperInput").value;
   const reminderVal=$("#reminderInput").value;
   const remindAt = reminderVal ? new Date(reminderVal).getTime() : null;
   if(!body && !title){ toast("Escribí algo primero"); return; }
   let id = editingId;
   if(editingId){
-    await apiUpdate(editingId, { title, body, tags, color:pickedColor });
+    await apiUpdate(editingId, { title, body, tags, color:pickedColor, paper });
   }else{
-    const created = await apiCreate({ title, body, tags, color:pickedColor, x: pendingPos.x, y: pendingPos.y });
+    const created = await apiCreate({ title, body, tags, color:pickedColor, paper, x: pendingPos.x, y: pendingPos.y });
     id = created.id;
   }
   await apiReminder(id, remindAt);
@@ -511,6 +700,12 @@ $("#saveEdit").onclick=async ()=>{
 $("#search").oninput = applySearchFilter;
 $("#search").addEventListener("keydown", (e) => { if (e.key === "Enter") focusFirstMatch(); });
 $("#world").addEventListener("click", async (e) => {
+  const cut = e.target.closest("[data-cut]");
+  if (cut && !isReadOnly){
+    const id = cut.getAttribute("data-cut");
+    toast("¿Cortar este hilo?", { action: "Cortar", duration: 4000, onAction: () => cutLink(id) });
+    return;
+  }
   const del = e.target.closest("[data-del]");
   if (del){
     e.stopPropagation();
@@ -539,6 +734,8 @@ function playDoneToggle(n, cardEl){
 }
 $("#detailOverlay").onclick=async (e)=>{
   if(e.target.id==="detailOverlay"||e.target.hasAttribute("data-close")){ $("#detailOverlay").classList.remove("open"); return; }
+  const go=e.target.closest("[data-goto]"); if(go){ $("#detailOverlay").classList.remove("open"); openNoteById(go.dataset.goto); return; }
+  const ul=e.target.closest("[data-unlink]"); if(ul){ $("#detailOverlay").classList.remove("open"); await cutLink(ul.dataset.unlink); return; }
   const ed=e.target.closest("[data-edit]"); if(ed){ const n=notes.find(x=>x.id===ed.dataset.edit); $("#detailOverlay").classList.remove("open"); openEditor(n); return; }
   const cp=e.target.closest("[data-copy]"); if(cp){ const n=notes.find(x=>x.id===cp.dataset.copy); navigator.clipboard.writeText((n.title?n.title+"\n\n":"")+n.body); toast("Copiado"); return; }
   const td=e.target.closest("[data-toggledone]"); if(td){ const n=notes.find(x=>x.id===td.dataset.toggledone); if(n){ $("#detailOverlay").classList.remove("open"); playDoneToggle(n, document.querySelector(`.card[data-id="${n.id}"]`)); } return; }
@@ -564,7 +761,8 @@ $("#exportBtn").onclick=async ()=>{
     }
     return copy;
   }));
-  const blob=new Blob([JSON.stringify(out,null,2)],{type:"application/json"});
+  const backup = { version: 2, notes: out, links: links.map(l => ({ a: l.a, b: l.b })) };
+  const blob=new Blob([JSON.stringify(backup,null,2)],{type:"application/json"});
   const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
   a.download="corcho-backup-"+new Date().toISOString().slice(0,10)+".json"; a.click();
   setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
@@ -578,11 +776,14 @@ $("#importFile").onchange=(e)=>{
   r.onload=async ()=>{
     let d;
     try{ d=JSON.parse(r.result); }catch(err){ toast("Archivo inválido"); return; }
-    if(!Array.isArray(d)){ toast("Archivo inválido"); return; }
-    if(!confirm(`¿Importar ${d.length} nota${d.length===1?"":"s"} al corcho? Se suman a las que ya tenés.`)) return;
+    // backups viejos: una lista de notas; nuevos: { notes, links }
+    const bNotes = Array.isArray(d) ? d : (d && Array.isArray(d.notes) ? d.notes : null);
+    const bLinks = d && Array.isArray(d.links) ? d.links : [];
+    if(!bNotes){ toast("Archivo inválido"); return; }
+    if(!confirm(`¿Importar ${bNotes.length} nota${bNotes.length===1?"":"s"} al corcho? Se suman a las que ya tenés.`)) return;
     try{
       const res = checkAuth(await fetch("/api/notes/import", {
-        method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ notes:d })
+        method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ notes:bNotes, links:bLinks })
       }));
       if(!res.ok) throw new Error("HTTP "+res.status);
       const { imported } = await res.json();
@@ -624,7 +825,7 @@ function pinchInfo(){
   };
 }
 viewport.addEventListener("pointerdown", (e) => {
-  if (e.target.closest(".card")) return;
+  if (e.target.closest(".card") || e.target.closest("[data-cut]")) return;
   if (e.pointerType === "mouse" && e.button !== 0) return;
   viewport.setPointerCapture(e.pointerId);
   activePointers.set(e.pointerId, { x:e.clientX, y:e.clientY });

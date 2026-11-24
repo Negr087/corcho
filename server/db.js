@@ -51,6 +51,21 @@ if (!existingColumns.includes("height")) db.exec("ALTER TABLE notes ADD COLUMN h
 // borrado "blando": la nota va a la papelera y se puede deshacer; se purga
 // de verdad despues de unos dias (ver purgeDeletedNotes).
 if (!existingColumns.includes("deleted_at")) db.exec("ALTER TABLE notes ADD COLUMN deleted_at INTEGER");
+// tipo de papel elegido a mano ("" = automatico segun el contenido)
+if (!existingColumns.includes("paper")) db.exec("ALTER TABLE notes ADD COLUMN paper TEXT DEFAULT ''");
+
+// Hilos rojos que unen dos notas. Se guardan con a < b para que no haya
+// duplicados en los dos sentidos.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS links (
+    id TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    a TEXT NOT NULL,
+    b TEXT NOT NULL,
+    created INTEGER NOT NULL
+  )
+`);
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS links_pair ON links (owner, a, b)");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
@@ -150,14 +165,15 @@ function createNote({
   height,
   remindAt,
   reminded,
+  paper,
 }) {
   const id = genId();
   if (typeof created !== "number") created = Date.now();
   const pos = typeof x === "number" && typeof y === "number" ? { x, y } : scatterPosition(owner);
   db.prepare(
     `INSERT INTO notes (id, title, body, tags, color, source, created, x, y, owner, telegram_chat_id, telegram_message_id, image_path,
-                        done, width, height, remind_at, reminded)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                        done, width, height, remind_at, reminded, paper)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     title,
@@ -176,13 +192,14 @@ function createNote({
     typeof width === "number" ? width : null,
     typeof height === "number" ? height : null,
     typeof remindAt === "number" ? remindAt : null,
-    reminded ? 1 : 0
+    reminded ? 1 : 0,
+    paper || ""
   );
   emitChange(owner);
   return db.prepare("SELECT * FROM notes WHERE id = ?").get(id);
 }
 
-function updateNote(id, owner, { title, body, tags, color, x, y }) {
+function updateNote(id, owner, { title, body, tags, color, x, y, paper }) {
   const existing = getNote(id, owner);
   if (!existing) return null;
   const next = {
@@ -192,14 +209,18 @@ function updateNote(id, owner, { title, body, tags, color, x, y }) {
     color: color !== undefined ? color : existing.color,
     x: x !== undefined ? x : existing.x,
     y: y !== undefined ? y : existing.y,
+    paper: paper !== undefined ? paper : existing.paper,
   };
-  db.prepare("UPDATE notes SET title = ?, body = ?, tags = ?, color = ?, x = ?, y = ? WHERE id = ? AND owner = ?").run(
+  db.prepare(
+    "UPDATE notes SET title = ?, body = ?, tags = ?, color = ?, x = ?, y = ?, paper = ? WHERE id = ? AND owner = ?"
+  ).run(
     next.title,
     next.body,
     next.tags,
     next.color,
     next.x,
     next.y,
+    next.paper || "",
     id,
     owner
   );
@@ -275,6 +296,10 @@ function purgeDeletedNotes(olderThanMs) {
     .prepare("SELECT image_path FROM notes WHERE deleted_at IS NOT NULL AND deleted_at < ? AND image_path IS NOT NULL")
     .all(cutoff)
     .map((r) => r.image_path);
+  db.prepare(
+    `DELETE FROM links WHERE a IN (SELECT id FROM notes WHERE deleted_at IS NOT NULL AND deleted_at < ?)
+                          OR b IN (SELECT id FROM notes WHERE deleted_at IS NOT NULL AND deleted_at < ?)`
+  ).run(cutoff, cutoff);
   db.prepare("DELETE FROM notes WHERE deleted_at IS NOT NULL AND deleted_at < ?").run(cutoff);
   return images;
 }
@@ -315,6 +340,35 @@ function getOverdueNags(intervalMs) {
 
 function touchNagged(id) {
   db.prepare("UPDATE notes SET last_nagged_at = ? WHERE id = ?").run(Date.now(), id);
+}
+
+// Hilos de las notas visibles (si una punta esta en la papelera, el hilo no
+// se muestra, pero vuelve si se restaura la nota).
+function listLinks(owner) {
+  return db
+    .prepare(
+      `SELECT l.id, l.a, l.b, l.created FROM links l
+       JOIN notes na ON na.id = l.a AND na.deleted_at IS NULL
+       JOIN notes nb ON nb.id = l.b AND nb.deleted_at IS NULL
+       WHERE l.owner = ?`
+    )
+    .all(owner);
+}
+
+function createLink(owner, noteA, noteB) {
+  if (!noteA || !noteB || noteA === noteB) return null;
+  if (!getNote(noteA, owner) || !getNote(noteB, owner)) return null;
+  const [a, b] = noteA < noteB ? [noteA, noteB] : [noteB, noteA];
+  const existing = db.prepare("SELECT id, a, b, created FROM links WHERE owner = ? AND a = ? AND b = ?").get(owner, a, b);
+  if (existing) return existing;
+  const link = { id: genId(), a, b, created: Date.now() };
+  db.prepare("INSERT INTO links (id, owner, a, b, created) VALUES (?, ?, ?, ?, ?)").run(link.id, owner, a, b, link.created);
+  emitChange(owner);
+  return link;
+}
+
+function deleteLink(id, owner) {
+  return changed(db.prepare("DELETE FROM links WHERE id = ? AND owner = ?").run(id, owner), owner);
 }
 
 function addPushSubscription(owner, subscription) {
@@ -384,6 +438,9 @@ module.exports = {
   deleteNote,
   restoreNote,
   purgeDeletedNotes,
+  listLinks,
+  createLink,
+  deleteLink,
   setReminder,
   getDueReminders,
   markReminded,

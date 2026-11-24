@@ -9,6 +9,11 @@
        del sitio -- estos valores no cambian en modo oscuro. */
     --card-ink:#2B241C; --card-ink2:#4A4136; --card-mut2:#A2988C;
     --card-accent:#D97A3F; --card-accent-dk:#7C4A20;
+    --cork-grain:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.75' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .28 0 0 0 0 .17 0 0 0 0 .07 0 0 0 -2.6 1.6'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    --cork-blotch:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='600'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.012' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .35 0 0 0 0 .22 0 0 0 0 .1 0 0 0 .55 -.18'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    --paper-grain:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .3 0 0 0 0 .24 0 0 0 0 .16 0 0 0 .16 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    --ink-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.55' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 -3 2.4'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    --string:#b3202a; --string-dk:#6e0f15;
   }
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
@@ -26,9 +31,10 @@
   html,body{height:100%}
   body{
     font-family:var(--sans); color:var(--ink);
+    /* corcho: grano fino + manchas grandes de tono, generados con ruido SVG */
     background:
-      radial-gradient(circle at 20% 20%, rgba(255,255,255,.10), transparent 40%),
-      repeating-radial-gradient(circle at 50% 50%, rgba(90,60,30,.05) 0 2px, transparent 2px 4px),
+      var(--cork-grain),
+      var(--cork-blotch),
       var(--cork);
     height:100%; display:flex; flex-direction:column; overflow:hidden;
   }
@@ -57,6 +63,11 @@
   .btn.ghost{background:var(--paper); color:var(--ink); box-shadow:rgba(70,55,30,.06) 0 2px 10px}
   .btn.accent{background:var(--accent)}
   main{position:relative; flex:1; overflow:hidden}
+  /* luz: el centro del corcho mas iluminado y los bordes en sombra */
+  main::after{
+    content:""; position:absolute; inset:0; pointer-events:none; z-index:5;
+    background:radial-gradient(ellipse at 50% 42%, transparent 45%, rgba(40,24,8,.28) 100%);
+  }
   .topinfo{
     position:absolute; top:16px; left:20px; right:20px; z-index:10; pointer-events:none;
     display:flex; flex-wrap:wrap; align-items:center; gap:8px;
@@ -66,15 +77,15 @@
   .filters #tagChips{display:contents}
   .chip{
     font-family:var(--sans); font-size:12px; font-weight:600; color:var(--ink);
-    background:rgba(246,242,234,.85); border:1px solid rgba(43,36,28,.14); padding:4px 11px; border-radius:999px; cursor:pointer;
+    background:color-mix(in srgb, var(--paper) 88%, transparent); border:1px solid color-mix(in srgb, var(--ink) 16%, transparent); padding:4px 11px; border-radius:999px; cursor:pointer;
   }
   .chip.on{background:var(--ink); color:var(--paper); border-color:var(--ink)}
   .count{
     pointer-events:none;
     font-family:var(--hand); font-size:18px; color:var(--ink);
-    background:rgba(246,242,234,.85); padding:3px 14px; border-radius:999px;
+    background:color-mix(in srgb, var(--paper) 88%, transparent); padding:3px 14px; border-radius:999px;
   }
-  .canvas-viewport{position:absolute; inset:0; overflow:hidden; cursor:grab; touch-action:none}
+  .canvas-viewport{position:absolute; inset:0; overflow:hidden; cursor:grab; touch-action:none; z-index:0}
   .canvas-viewport.panning{cursor:grabbing}
   .canvas-world{position:absolute; top:0; left:0; width:0; height:0}
   .empty{position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:20px; color:rgba(43,36,28,.65); pointer-events:none}
@@ -89,6 +100,8 @@
   .canvas-controls .zoom-label{font-size:12px; color:var(--mut); min-width:36px; text-align:center}
   .canvas-controls .center-btn{width:auto; padding:0 14px; border-radius:999px; font-size:12px; font-weight:600}
   .card{
+    --pc:#F4EDDC;
+    background-color:var(--pc); background-image:var(--paper-grain);
     position:absolute; width:240px; border-radius:10px; padding:20px 18px 16px;
     box-shadow:rgba(70,52,28,.20) 0 14px 34px, rgba(70,55,30,.10) 0 2px 8px;
     cursor:grab; transition:box-shadow .18s; touch-action:none; user-select:none;
@@ -96,12 +109,143 @@
   }
   .card:hover{box-shadow:rgba(70,52,28,.28) 0 22px 50px}
   .card.dragging{cursor:grabbing; z-index:50; box-shadow:rgba(70,52,28,.35) 0 26px 60px}
+  /* --- como se sujeta cada nota: chinche, cinta o clip --- */
+  .fastener{position:absolute; top:0; left:50%; z-index:3; cursor:crosshair; touch-action:none}
+  /* area de toque mas grande que el dibujo, para agarrar el hilo con el dedo */
+  .fastener::before{content:""; position:absolute; inset:-12px}
   .pin{
-    position:absolute; top:-9px; left:50%; transform:translateX(-50%);
+    --pin:#D97A3F;
+    top:-9px; transform:translateX(-50%);
     width:18px; height:18px; border-radius:50%;
-    background:radial-gradient(circle at 35% 30%, #ff9d6b, var(--accent) 55%, var(--accent-dk));
-    box-shadow:rgba(120,80,40,.35) 0 4px 8px, inset rgba(255,255,255,.5) 0 1px 1px;
+    background:radial-gradient(circle at 35% 30%, rgba(255,255,255,.75), var(--pin) 38%, color-mix(in srgb, var(--pin) 55%, #000));
+    box-shadow:rgba(60,35,10,.45) 2px 5px 6px, inset rgba(255,255,255,.4) 0 1px 1px;
   }
+  .tape{
+    --tape:rgba(240,226,190,.72);
+    top:-13px; width:96px; height:26px; transform:translateX(-50%) rotate(var(--tilt, -3deg));
+    background:
+      repeating-linear-gradient(90deg, rgba(255,255,255,.18) 0 6px, transparent 6px 12px),
+      var(--tape);
+    box-shadow:rgba(60,35,10,.18) 0 2px 4px;
+    /* bordes cortados con los dedos */
+    clip-path:polygon(0 8%, 4% 0, 2% 22%, 5% 40%, 1% 60%, 4% 80%, 0 100%, 100% 100%, 97% 86%, 100% 66%, 96% 48%, 100% 28%, 97% 12%, 100% 0);
+  }
+  .clip{top:-22px; width:20px; height:50px; transform:translateX(-50%) rotate(6deg); filter:drop-shadow(1px 3px 2px rgba(40,25,10,.35))}
+  .clip svg{width:100%; height:100%; display:block}
+
+  /* --- sello de "hecho" --- */
+  .stamp{
+    position:absolute; left:50%; top:48%; z-index:2; pointer-events:none;
+    transform:translate(-50%,-50%) rotate(-14deg);
+    font-family:var(--sans); font-weight:800; font-size:26px; letter-spacing:.18em; padding:4px 12px 4px 16px;
+    color:#b0222b; border:3px double #b0222b; border-radius:6px; mix-blend-mode:multiply; opacity:.85;
+    -webkit-mask-image:var(--ink-mask); mask-image:var(--ink-mask);
+  }
+
+  /* --- tipos de papel --- */
+  /* post-it: cuadrado, escrito a mano, con la esquina levantada */
+  .card.paper-postit{
+    width:210px; min-height:196px; border-radius:2px 2px 4px 2px; padding:26px 18px 18px;
+    box-shadow:rgba(70,52,28,.10) 0 2px 3px, rgba(70,52,28,.24) 6px 16px 22px -8px;
+  }
+  .card.paper-postit::after{
+    content:""; position:absolute; right:0; bottom:0; width:34px; height:34px; pointer-events:none;
+    background:linear-gradient(135deg, transparent 48%, rgba(0,0,0,.10) 50%, rgba(255,255,255,.45) 58%, rgba(0,0,0,.05) 70%, transparent 74%);
+    border-radius:0 0 4px 0;
+  }
+  .card.paper-postit h3{font-family:var(--hand); font-size:27px; font-weight:600; line-height:1.05}
+  .card.paper-postit .body{font-family:var(--hand); font-size:21px; line-height:1.15; color:var(--card-ink); -webkit-line-clamp:6}
+
+  /* hoja de cuaderno: renglones, margen rojo y el borde de arriba arrancado */
+  .card.paper-notebook{
+    width:270px; border-radius:0 0 3px 3px; padding:24px 16px 14px 50px;
+    background-image:
+      linear-gradient(90deg, transparent 38px, rgba(214,72,72,.55) 38px 39.5px, transparent 39.5px),
+      repeating-linear-gradient(180deg, transparent 0 23px, rgba(80,120,180,.30) 23px 24px),
+      var(--paper-grain);
+    box-shadow:none; filter:drop-shadow(0 10px 14px rgba(70,52,28,.22)) drop-shadow(0 1px 2px rgba(70,52,28,.12));
+  }
+  .card.paper-notebook::before{
+    content:""; position:absolute; left:0; right:0; top:-7px; height:8px;
+    background:conic-gradient(from 135deg at 50% 0, var(--pc) 90deg, transparent 0) 50% 0 / 11px 100%;
+  }
+  .card.paper-notebook:hover, .card.paper-receipt:hover{box-shadow:none}
+  .card.paper-notebook h3{font-family:var(--hand); font-size:25px; font-weight:600; line-height:24px; margin-bottom:0; min-height:24px}
+  .card.paper-notebook .body{font-family:var(--hand); font-size:20px; line-height:24px; color:#283a5e; -webkit-line-clamp:9}
+  .card.paper-notebook .tags, .card.paper-notebook .reminder, .card.paper-notebook .date{margin-top:0; line-height:24px}
+  .card.paper-notebook .check{left:9px}
+
+  /* ticket: angosto, letra de maquina y borde dentado abajo */
+  .card.paper-receipt{
+    --pc:#FBF9F2 !important;
+    width:200px; border-radius:0; padding:24px 16px 16px;
+    font-family:"Courier New", ui-monospace, monospace;
+    box-shadow:none; filter:drop-shadow(0 10px 12px rgba(70,52,28,.22));
+  }
+  .card.paper-receipt::after{
+    content:""; position:absolute; left:0; right:0; bottom:-8px; height:8px;
+    background:conic-gradient(from -45deg at 50% 100%, var(--pc) 90deg, transparent 0) 50% 0 / 12px 100%;
+  }
+  .card.paper-receipt h3{
+    font-family:inherit; font-size:15px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; text-align:center;
+    padding-bottom:8px; border-bottom:1.5px dashed rgba(43,36,28,.45);
+  }
+  .card.paper-receipt .body{font-family:inherit; font-size:12.5px; line-height:1.55; -webkit-line-clamp:12}
+  .card.paper-receipt .tags{font-family:inherit; font-size:11.5px; text-transform:uppercase; letter-spacing:.06em; border-top:1.5px dashed rgba(43,36,28,.45); padding-top:8px}
+  .card.paper-receipt .date{font-family:inherit; justify-content:center}
+
+  /* ficha: encabezado con linea roja y renglones celestes */
+  .card.paper-index{
+    width:270px; border-radius:3px; padding:22px 18px 14px;
+    background-image:
+      repeating-linear-gradient(180deg, transparent 0 21px, rgba(80,120,180,.26) 21px 22px),
+      var(--paper-grain);
+    background-size:100% calc(100% - 58px), auto;
+    background-position:0 58px, 0 0;
+    background-repeat:no-repeat, repeat;
+  }
+  .card.paper-index h3{border-bottom:2px solid rgba(205,60,60,.65); padding-bottom:6px; min-height:34px}
+  .card.paper-index .body{line-height:22px}
+
+  /* polaroid: marco blanco, la foto y el titulo escrito a mano abajo */
+  .card.paper-polaroid{
+    --pc:#FBFBF7 !important;
+    width:236px; border-radius:2px; padding:14px 14px 16px;
+  }
+  .card.paper-polaroid .thumb{
+    max-height:none; aspect-ratio:1/1; border-radius:0; margin-bottom:12px;
+    box-shadow:inset 0 0 0 1px rgba(0,0,0,.06); filter:saturate(.92) contrast(1.03);
+  }
+  .card.paper-polaroid h3{font-family:var(--hand); font-size:25px; font-weight:600; text-align:center; margin-bottom:2px}
+  .card.paper-polaroid .body{font-family:var(--hand); font-size:19px; line-height:1.15; text-align:center; -webkit-line-clamp:2}
+  .card.paper-polaroid .tags{text-align:center; margin-top:6px}
+  .card.paper-polaroid .date{justify-content:center}
+
+  /* --- hilos rojos --- */
+  .strings{position:absolute; left:0; top:0; width:1px; height:1px; overflow:visible; pointer-events:none; z-index:30}
+  .strings .string{fill:none; stroke:var(--string); stroke-width:2.2; stroke-linecap:round}
+  .strings .string-shadow{fill:none; stroke:rgba(30,15,5,.28); stroke-width:2.6; stroke-linecap:round; filter:blur(1.5px)}
+  .strings .string-hi{fill:none; stroke:rgba(255,180,170,.45); stroke-width:.8; stroke-linecap:round; transform:translate(-.6px,-.6px)}
+  .strings .knot{fill:var(--string-dk)}
+  .strings .string-hit{fill:none; stroke:transparent; stroke-width:16; pointer-events:stroke; cursor:pointer}
+  .strings g:hover .string{stroke:#d8343e; stroke-width:2.8}
+  .strings .temp{stroke-dasharray:6 5; opacity:.85}
+  body.readonly .strings .string-hit{pointer-events:none}
+  body.readonly .fastener{cursor:inherit}
+  .card.link-target{outline:3px dashed var(--string); outline-offset:6px}
+
+  /* conexiones en el detalle de una nota */
+  .links-box{margin-top:16px; padding-top:12px; border-top:1px dashed rgba(43,36,28,.2)}
+  .links-box .lbl{font-size:11px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--mut); margin-bottom:8px}
+  .links-box .tip{font-size:12.5px; color:var(--mut)}
+  .link-chip{
+    display:inline-flex; align-items:center; gap:6px; margin:0 6px 6px 0; padding:5px 6px 5px 11px; border-radius:999px;
+    background:rgba(179,32,42,.08); border:1px solid rgba(179,32,42,.3); font-size:13px; color:var(--ink);
+  }
+  .link-chip button{background:none; border:0; cursor:pointer; color:inherit; font:inherit}
+  .link-chip .go{font-weight:600; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .link-chip .cut{width:20px; height:20px; border-radius:50%; color:var(--mut); line-height:1}
+  .link-chip .cut:hover{background:rgba(179,32,42,.15); color:#b3202a}
   .card h3{font-family:var(--serif); font-weight:600; font-size:22px; line-height:1.2; color:var(--card-ink); margin-bottom:8px;
     overflow-wrap:anywhere; word-break:break-word; flex-shrink:0}
   .card .body{font-size:14px; line-height:1.5; color:var(--card-ink2); white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word;
@@ -123,6 +267,12 @@
     display:grid; place-items:center; font-size:13px; color:transparent; transition:all .15s;
   }
   .card .check:hover{border-color:var(--card-accent-dk)}
+  /* con mouse, el circulo de "hecha" aparece al pasar por encima (asi no tapa
+     el titulo); en pantallas tactiles queda siempre visible. */
+  @media (hover:hover){
+    .card .check{opacity:0}
+    .card:hover .check, .card.done .check{opacity:1}
+  }
   .card.done .check{background:var(--card-accent); border-color:var(--card-accent-dk); color:#fff}
   .card .resize-handle{
     position:absolute; right:1px; bottom:1px; width:24px; height:24px; border-radius:6px 0 8px 0;
@@ -132,8 +282,7 @@
   .card .resize-handle svg{width:13px; height:13px}
   .card:hover .resize-handle{opacity:1}
   .card .resize-handle:hover{color:var(--card-ink)}
-  .card.done{opacity:.6}
-  .card.done h3{text-decoration:line-through}
+  .card.done > :not(.stamp):not(.fastener):not(.check):not(.del){opacity:.55}
   .card .thumb{
     width:100%; max-height:120px; object-fit:cover; border-radius:8px; margin-bottom:10px;
     display:block; background:rgba(43,36,28,.08);

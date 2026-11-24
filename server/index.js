@@ -28,6 +28,9 @@ const {
   deleteNote,
   restoreNote,
   setReminder,
+  listLinks,
+  createLink,
+  deleteLink,
   addPushSubscription,
   removePushSubscription,
 } = require("./db");
@@ -119,12 +122,26 @@ app.get("/api/notes", ensureAuthApi, (req, res) => {
   res.json(listNotes(req.user.boardOwner));
 });
 
+// Tipos de papel validos ("" = automatico, lo decide la web segun el contenido)
+const PAPERS = ["", "card", "postit", "notebook", "receipt", "index", "polaroid"];
+const cleanPaper = (p) => (PAPERS.includes(p) ? p : undefined);
+
 app.post("/api/notes", ensureAuthApi, ensureWriteAccess, (req, res) => {
-  const { title, body, tags, color, x, y } = req.body || {};
+  const { title, body, tags, color, x, y, paper } = req.body || {};
   if (!body && !title) {
     return res.status(400).json({ error: "title o body requerido" });
   }
-  const note = createNote({ title, body, tags, color, x, y, source: "web", owner: req.user.boardOwner });
+  const note = createNote({
+    title,
+    body,
+    tags,
+    color,
+    x,
+    y,
+    paper: cleanPaper(paper),
+    source: "web",
+    owner: req.user.boardOwner,
+  });
   res.status(201).json(note);
 });
 
@@ -138,6 +155,7 @@ app.post(IMPORT_PATH, ensureAuthApi, ensureWriteAccess, (req, res) => {
   const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
   const str = (v) => (typeof v === "string" ? v : "");
   let imported = 0;
+  const idMap = new Map(); // id del backup -> id nuevo, para rearmar los hilos
   for (const n of items) {
     if (!n || typeof n !== "object" || (!n.title && !n.body && !n.image)) continue;
     let imagePath = null;
@@ -146,7 +164,8 @@ app.post(IMPORT_PATH, ensureAuthApi, ensureWriteAccess, (req, res) => {
       imagePath = crypto.randomUUID() + "." + (img[1] === "jpeg" ? "jpg" : img[1]);
       fs.writeFileSync(path.join(IMAGES_DIR, imagePath), Buffer.from(img[2], "base64"));
     }
-    createNote({
+    const created = createNote({
+      paper: cleanPaper(n.paper),
       title: str(n.title),
       body: str(n.body),
       tags: str(n.tags),
@@ -163,13 +182,20 @@ app.post(IMPORT_PATH, ensureAuthApi, ensureWriteAccess, (req, res) => {
       imagePath,
       owner: req.user.boardOwner,
     });
+    if (typeof n.id === "string") idMap.set(n.id, created.id);
     imported++;
   }
-  res.status(201).json({ imported });
+  let linked = 0;
+  for (const l of Array.isArray(req.body.links) ? req.body.links : []) {
+    if (l && idMap.has(l.a) && idMap.has(l.b) && createLink(req.user.boardOwner, idMap.get(l.a), idMap.get(l.b))) linked++;
+  }
+  res.status(201).json({ imported, linked });
 });
 
 app.put("/api/notes/:id", ensureAuthApi, ensureWriteAccess, (req, res) => {
-  const note = updateNote(req.params.id, req.user.boardOwner, req.body || {});
+  const fields = { ...(req.body || {}) };
+  if ("paper" in fields) fields.paper = cleanPaper(fields.paper);
+  const note = updateNote(req.params.id, req.user.boardOwner, fields);
   if (!note) return res.status(404).json({ error: "no encontrada" });
   res.json(note);
 });
@@ -208,6 +234,23 @@ app.patch("/api/notes/:id/reminder", ensureAuthApi, ensureWriteAccess, (req, res
   }
   const ok = setReminder(req.params.id, req.user.boardOwner, remindAt);
   if (!ok) return res.status(404).json({ error: "no encontrada" });
+  res.status(204).end();
+});
+
+// --- hilos rojos entre notas ---
+app.get("/api/links", ensureAuthApi, (req, res) => {
+  res.json(listLinks(req.user.boardOwner));
+});
+
+app.post("/api/links", ensureAuthApi, ensureWriteAccess, (req, res) => {
+  const { a, b } = req.body || {};
+  const link = createLink(req.user.boardOwner, a, b);
+  if (!link) return res.status(400).json({ error: "hacen falta dos notas distintas que existan" });
+  res.status(201).json(link);
+});
+
+app.delete("/api/links/:id", ensureAuthApi, ensureWriteAccess, (req, res) => {
+  if (!deleteLink(req.params.id, req.user.boardOwner)) return res.status(404).json({ error: "no encontrado" });
   res.status(204).end();
 });
 
