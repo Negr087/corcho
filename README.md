@@ -98,18 +98,30 @@ Prueban el parser de fechas de los recordatorios (`test/noteHeuristics.test.js`)
 - Título/etiquetas de las notas que crea el bot se derivan con heurísticas simples en `server/noteHeuristics.js` (primera oración como título, palabras clave para etiquetas) — no usa ningún LLM, así que es gratis pero limitado.
 - Las sesiones de login se guardan en la misma base SQLite (tabla `sessions`, `server/sessionStore.js`), no en memoria — sobreviven a reinicios del proceso (deploys, crashes), así que un deploy no desloguea a nadie.
 
-## Producción (VPS Windows)
+## Producción (Docker en nodo propio)
 
-Corriendo en un VPS Windows Server propio (`corcho.sebadev.com.ar`), 24/7, gestionado con **pm2** (ya usado ahí para otras apps) y **Caddy** como reverse proxy con HTTPS automático (Let's Encrypt).
+Corre 24/7 en un nodo Linux propio con **Docker Compose**, en `~/corcho` (un clon de este repo). El `Dockerfile` y el `docker-compose.yml` viven solo en el nodo, no en el repo. El `.env` de producción también está en el nodo.
 
-- App: `C:\Users\Administrator\corcho` — mismo código que este repo, `.env` propio (puerto 3000, `WHISPER_MODEL=Xenova/whisper-tiny` para no comerse la RAM del VPS que es limitada).
-- Proxy: `C:\Users\Administrator\caddy\caddy.exe` con `Caddyfile` apuntando `corcho.sebadev.com.ar` → `127.0.0.1:3000`.
-- Ambos corren como procesos de pm2 (`pm2 list` para verlos, `pm2 logs corcho` / `pm2 logs caddy` para logs).
-- DNS: registro A en Cloudflare, **DNS only** (sin proxy naranja) para que Caddy pueda validar el certificado directo.
-- Reinicio ante caída del VPS: tarea programada de Windows `pm2-resurrect` (corre `pm2 resurrect` al bootear, como SYSTEM, con 30s de delay).
+**Redeployar un cambio:**
 
-**Importante:** no corras `npm start` en tu PC local al mismo tiempo que el del VPS — los dos usan el mismo `TELEGRAM_BOT_TOKEN`, y Telegram solo permite un poller activo por bot (el segundo tira error 409 / conflictos de conexión). El VPS es ahora la única instancia que debe hacer polling.
+```
+cd ~/corcho && git pull && sudo docker compose up -d --build
+```
 
-Para redeployar un cambio: copiar los archivos de `server/`, `public/` y `package*.json` al VPS (scp o git), correr `npm install` si cambiaron las dependencias, y `pm2 restart corcho`.
+`--build` reconstruye la imagen y las dependencias se instalan ahí adentro, así que no hace falta correr `npm install` a mano en el nodo, aunque cambie `package.json`.
 
-La zona horaria con la que se interpretan los recordatorios es `America/Argentina/Buenos_Aires` por defecto (se cambia con `TZ` en `.env`), independientemente de la hora del VPS.
+**Verificar que levantó bien:**
+
+```
+sudo docker compose ps
+sudo docker compose logs --tail 30
+```
+
+En los logs tiene que aparecer `corcho escuchando en ...` y `Recordatorios activos (Telegram: si, push: si/no)`. `push: no` es normal si no hay claves `VAPID_*` en el `.env`.
+
+**Cosas a tener en cuenta:**
+
+- **Datos:** la base (`data/corcho.db`) y las fotos (`data/images/`) tienen que estar en un volumen o bind mount del contenedor. Si no, se pierden cada vez que se reconstruye la imagen.
+- **Zona horaria:** los recordatorios se interpretan en `America/Argentina/Buenos_Aires` por defecto, sin importar la hora del nodo. Si el `docker-compose.yml` o el `.env` definen `TZ` (por ejemplo `TZ=UTC`), la app usa ese valor. Para cambiarla, poné `TZ=` con la zona que quieras.
+- **Un solo bot a la vez:** no corras `npm start` en tu PC al mismo tiempo que el contenedor. Los dos usan el mismo `TELEGRAM_BOT_TOKEN` y Telegram solo permite un poller activo por bot (el segundo da error 409). El nodo es la única instancia que debe hacer polling.
+- **Notificaciones del navegador:** necesitan que la web se sirva por HTTPS.
