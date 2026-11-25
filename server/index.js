@@ -302,7 +302,8 @@ function cleanMark(input, kind, partial = false) {
   }
   if (input.size !== undefined || !partial) {
     if (!isNum(input.size)) return null;
-    out.size = Math.min(120, Math.max(1, input.size));
+    // trazos: grosor del marcador; textos: tamaño de letra (se pueden agrandar mucho)
+    out.size = Math.min(400, Math.max(1, input.size));
   }
   if (input.data !== undefined || !partial) {
     const d = input.data;
@@ -314,6 +315,9 @@ function cleanMark(input, kind, partial = false) {
       out.data = {
         points: pts.map(([px, py, pr]) => [Math.round(px * 10) / 10, Math.round(py * 10) / 10, Math.round(Math.min(1, Math.max(0, pr)) * 100) / 100]),
         pen: !!d.pen,
+        // trazos escritos seguidos y cerca (una palabra) comparten grupo y se
+        // seleccionan juntos
+        group: typeof d.group === "string" && /^[\w-]{1,40}$/.test(d.group) ? d.group : undefined,
       };
     } else {
       if (typeof d.text !== "string" || !d.text.trim() || d.text.length > MAX_TEXT_LENGTH) return null;

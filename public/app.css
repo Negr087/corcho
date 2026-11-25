@@ -380,3 +380,24 @@
   .ink-size span{display:block; width:6px; height:6px; border-radius:50%; background:var(--ink); transition:all .15s}
   .ink-size.thick span{width:14px; height:14px}
   body.readonly .draw-tools{display:none}
+
+  /* seleccion de lo escrito: recuadro punteado + esquina para cambiar el tamaño.
+     --z es el zoom actual: asi el borde y la esquina se ven igual con cualquier zoom */
+  .mark-selection{
+    position:absolute; box-sizing:content-box; pointer-events:auto; cursor:move; touch-action:none;
+    margin:calc(-8px / var(--z, 1)); padding:calc(6px / var(--z, 1));
+    border:calc(1.5px / var(--z, 1)) dashed #2f6fd6; border-radius:calc(6px / var(--z, 1));
+    background:rgba(47,111,214,.06);
+  }
+  .sel-handle{
+    position:absolute; right:calc(-9px / var(--z, 1)); bottom:calc(-9px / var(--z, 1));
+    width:calc(16px / var(--z, 1)); height:calc(16px / var(--z, 1)); border-radius:50%;
+    background:#fff; border:calc(2px / var(--z, 1)) solid #2f6fd6; cursor:nwse-resize; touch-action:none;
+    box-shadow:0 1px 3px rgba(0,0,0,.25);
+  }
+  /* en pantallas tactiles, una esquina mas grande para el dedo */
+  @media (pointer:coarse){
+    .sel-handle{width:calc(26px / var(--z, 1)); height:calc(26px / var(--z, 1)); right:calc(-14px / var(--z, 1)); bottom:calc(-14px / var(--z, 1))}
+  }
+  body:not(.tool-move) .mark-selection{display:none}
+  body.readonly .mark-selection{display:none}

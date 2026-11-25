@@ -49,6 +49,8 @@ let interacting = false;
 
 function applyTransform(){
   $("#world").style.transform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
+  // el recuadro de seleccion mantiene el mismo grosor en pantalla con cualquier zoom
+  $("#world").style.setProperty("--z", zoom);
   $("#zoomLabel").textContent = Math.round(zoom * 100) + "%";
   // parallax sutil: el fondo de corcho se mueve mas lento que las notas,
   // da sensacion de profundidad sin ser un canvas 3D de verdad.
@@ -628,6 +630,8 @@ let tool = "move";       // move | marker | text | eraser
 let spaceDown = false;   // espacio apretado: arrastrar mueve el lienzo con cualquier herramienta
 let inkGesture = null;   // trazo, borrado o toque de texto en curso
 let textEditing = null;  // texto que se esta escribiendo
+let selection = [];      // ids de las marcas seleccionadas (para mover o cambiar de tamaño)
+let lastInk = null;      // ultimo trazo: para agrupar las letras de una misma palabra
 
 async function apiMarkCreate(m){
   const r = checkAuth(await fetch("/api/marks", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(m) }));
@@ -736,6 +740,7 @@ function renderMarks(){
       layer.appendChild(createTextEl(m));
     }
   }
+  drawSelection();
 }
 
 function eventWorld(e){
@@ -744,6 +749,7 @@ function eventWorld(e){
 }
 function setTool(t){
   if (textEditing) finishTextEdit();
+  setSelection([]);
   tool = t;
   document.body.classList.remove("tool-move", "tool-marker", "tool-text", "tool-eraser");
   document.body.classList.add("tool-" + t);
@@ -790,7 +796,7 @@ function startInk(e){
   if (tool === "marker"){
     const path = svgEl("path", { fill: ink.color, class: "drawing" });
     document.querySelector("#marks .marks-svg").appendChild(path);
-    inkGesture = { type: "stroke", pointerId: e.pointerId, pen: e.pointerType === "pen", color: ink.color, size: INK_SIZES[ink.size].stroke, points: [], path, raf: 0 };
+    inkGesture = { type: "stroke", pointerId: e.pointerId, start: Date.now(), pen: e.pointerType === "pen", color: ink.color, size: INK_SIZES[ink.size].stroke, points: [], path, raf: 0 };
     interacting = true;
     addInkPoint(e);
     return true;
@@ -865,8 +871,21 @@ async function commitStroke(g){
   if (!g.points.length){ g.path.remove(); return; }
   g.path.setAttribute("d", inkPath(g.points, g.size, g.pen));
   const xs = g.points.map(p => p[0]), ys = g.points.map(p => p[1]);
+  // Las letras de una palabra se escriben seguidas y una al lado de la otra:
+  // si este trazo empezo poco despues del anterior y cerca, van al mismo
+  // grupo, y despues se agarran juntas.
+  const box = { x1: Math.min(...xs), y1: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) };
+  const reach = Math.max(60, g.size * 10);
+  const near = lastInk && g.start - lastInk.end < 2500 &&
+    box.x1 - reach < lastInk.box.x2 && box.x2 + reach > lastInk.box.x1 &&
+    box.y1 - reach < lastInk.box.y2 && box.y2 + reach > lastInk.box.y1;
+  const group = near ? lastInk.group : Math.random().toString(36).slice(2, 10);
+  lastInk = {
+    group, end: Date.now(),
+    box: near ? { x1: Math.min(box.x1, lastInk.box.x1), y1: Math.min(box.y1, lastInk.box.y1), x2: Math.max(box.x2, lastInk.box.x2), y2: Math.max(box.y2, lastInk.box.y2) } : box,
+  };
   try{
-    const m = await apiMarkCreate({ kind: "stroke", x: Math.min(...xs), y: Math.min(...ys), color: g.color, size: g.size, data: { points: g.points, pen: g.pen } });
+    const m = await apiMarkCreate({ kind: "stroke", x: box.x1, y: box.y1, color: g.color, size: g.size, data: { points: g.points, pen: g.pen, group } });
     marks.push(m);
     g.path.setAttribute("data-mark", m.id);
     g.path.classList.remove("drawing");
@@ -883,25 +902,27 @@ function distToSegment(px, py, ax, ay, bx, by){
   const t = len2 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2)) : 0;
   return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
 }
+// ¿el puntero toca esta marca? (con un margen comodo para el dedo)
+function markHit(m, e, p, tol){
+  if (m.kind === "stroke"){
+    const pts = m.data.points, reach = m.size / 2 + tol;
+    if (pts.length === 1) return Math.hypot(p.x - pts[0][0], p.y - pts[0][1]) <= reach;
+    for (let i = 1; i < pts.length; i++){
+      if (distToSegment(p.x, p.y, pts[i-1][0], pts[i-1][1], pts[i][0], pts[i][1]) <= reach) return true;
+    }
+    return false;
+  }
+  const el = markEl(m.id);
+  const r = el && el.getBoundingClientRect();
+  return !!r && e.clientX >= r.left - 6 && e.clientX <= r.right + 6 && e.clientY >= r.top - 6 && e.clientY <= r.bottom + 6;
+}
 function eraseAt(e){
   const g = inkGesture;
   const p = eventWorld(e);
   const tol = 10 / zoom;
   for (const m of marks){
     if (g.erased.has(m.id)) continue;
-    let hit = false;
-    if (m.kind === "stroke"){
-      const pts = m.data.points, reach = m.size / 2 + tol;
-      if (pts.length === 1) hit = Math.hypot(p.x - pts[0][0], p.y - pts[0][1]) <= reach;
-      for (let i = 1; i < pts.length && !hit; i++){
-        hit = distToSegment(p.x, p.y, pts[i-1][0], pts[i-1][1], pts[i][0], pts[i][1]) <= reach;
-      }
-    } else {
-      const el = markEl(m.id);
-      const r = el && el.getBoundingClientRect();
-      hit = !!r && e.clientX >= r.left - 6 && e.clientX <= r.right + 6 && e.clientY >= r.top - 6 && e.clientY <= r.bottom + 6;
-    }
-    if (hit){
+    if (markHit(m, e, p, tol)){
       g.erased.add(m.id);
       const el = markEl(m.id);
       if (el) el.style.display = "none";
@@ -929,7 +950,61 @@ async function eraseCommit(ids){
   });
 }
 
-// --- textos sueltos ---
+// --- seleccionar, mover y cambiar de tamaño lo escrito ---
+// Con la herramienta de mover: tocar un texto o un trazo lo selecciona (un
+// trazo trae a toda su palabra), arrastrarlo lo mueve y la esquina del
+// recuadro lo agranda o achica. Shift suma a la seleccion.
+const MIN_TEXT_SIZE = 12, MAX_TEXT_SIZE = 400;
+function groupIds(m){
+  const g = m.kind === "stroke" && m.data.group;
+  return g ? marks.filter(x => x.kind === "stroke" && x.data.group === g).map(x => x.id) : [m.id];
+}
+function selectMark(m, additive){
+  const ids = groupIds(m);
+  setSelection(additive ? [...new Set([...selection, ...ids])] : ids);
+}
+function setSelection(ids){
+  selection = ids;
+  drawSelection();
+}
+function markBox(m){
+  if (m.kind === "stroke"){
+    const xs = m.data.points.map(p => p[0]), ys = m.data.points.map(p => p[1]), r = m.size / 2;
+    return { x1: Math.min(...xs) - r, y1: Math.min(...ys) - r, x2: Math.max(...xs) + r, y2: Math.max(...ys) + r };
+  }
+  const el = markEl(m.id);
+  return { x1: m.x, y1: m.y, x2: m.x + (el ? el.offsetWidth : m.size * 3), y2: m.y + (el ? el.offsetHeight : m.size) };
+}
+function selectedMarks(){ return marks.filter(m => selection.includes(m.id)); }
+function selectionBox(){
+  const boxes = selectedMarks().map(markBox);
+  if (!boxes.length) return null;
+  return {
+    x1: Math.min(...boxes.map(b => b.x1)), y1: Math.min(...boxes.map(b => b.y1)),
+    x2: Math.max(...boxes.map(b => b.x2)), y2: Math.max(...boxes.map(b => b.y2)),
+  };
+}
+function drawSelection(){
+  const layer = document.getElementById("marks");
+  if (!layer) return;
+  selection = selection.filter(id => marks.some(m => m.id === id));
+  let el = layer.querySelector(".mark-selection");
+  const b = selection.length && !textEditing ? selectionBox() : null;
+  if (!b){ if (el) el.remove(); return; }
+  if (!el){
+    el = document.createElement("div");
+    el.className = "mark-selection";
+    el.innerHTML = `<div class="sel-handle" title="Arrastrá para agrandar o achicar"></div>`;
+    el.addEventListener("pointerdown", onSelectionPointerDown);
+    el.querySelector(".sel-handle").addEventListener("pointerdown", onResizeSelection);
+  }
+  layer.appendChild(el); // siempre arriba de todo lo escrito
+  el.style.transform = "";
+  el.style.left = b.x1 + "px";
+  el.style.top = b.y1 + "px";
+  el.style.width = (b.x2 - b.x1) + "px";
+  el.style.height = (b.y2 - b.y1) + "px";
+}
 function onTextPointerDown(e, mark, el){
   if (el.classList.contains("editing")){ e.stopPropagation(); return; }
   // solo lectura, marcador o goma: el toque sigue de largo al lienzo
@@ -937,56 +1012,145 @@ function onTextPointerDown(e, mark, el){
   if (e.pointerType === "mouse" && e.button !== 0) return;
   if (tool === "text"){ e.stopPropagation(); e.preventDefault(); editText(mark); return; }
   if (tool !== "move") return;
-  // con la herramienta de mover: arrastrar lo mueve, tocarlo lo edita
   e.stopPropagation();
   e.preventDefault();
+  selectMark(mark, e.shiftKey);
+  dragSelection(e);
+}
+// tocar lo que ya esta seleccionado: si es un solo texto, se edita
+function onSelectionPointerDown(e){
+  if (e.pointerType === "mouse" && e.button !== 0) return;
+  e.stopPropagation();
+  e.preventDefault();
+  dragSelection(e, () => {
+    const sel = selectedMarks();
+    if (sel.length === 1 && sel[0].kind === "text") editText(sel[0]);
+  });
+}
+// trazos seleccionados: su <path>; textos: su <div>
+function selectionEls(){
+  return selectedMarks().map(m => ({ m, el: markEl(m.id) })).filter(x => x.el);
+}
+function dragSelection(e, onTap){
+  const box = document.querySelector("#marks .mark-selection");
+  if (!box) return;
   const pointerId = e.pointerId;
-  const startX = e.clientX, startY = e.clientY, startLeft = mark.x, startTop = mark.y;
-  let lastX = startX, lastY = startY, moved = false;
+  box.setPointerCapture(pointerId);
+  const startX = e.clientX, startY = e.clientY;
+  const items = selectionEls();
+  let dx = 0, dy = 0, moved = false;
   interacting = true;
-  el.setPointerCapture(pointerId);
   function onMove(ev){
     if (ev.pointerId !== pointerId) return;
     ev.stopPropagation();
-    lastX = ev.clientX; lastY = ev.clientY;
-    if (!moved && Math.hypot(lastX - startX, lastY - startY) > 4){ moved = true; el.classList.add("dragging"); }
-    if (moved){
-      el.style.left = (startLeft + (lastX - startX) / zoom) + "px";
-      el.style.top = (startTop + (lastY - startY) / zoom) + "px";
+    dx = (ev.clientX - startX) / zoom; dy = (ev.clientY - startY) / zoom;
+    if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) > 4) moved = true;
+    if (!moved) return;
+    for (const { m, el } of items){
+      if (m.kind === "stroke") el.setAttribute("transform", `translate(${dx} ${dy})`);
+      else el.style.transform = `translate(${dx}px, ${dy}px)`;
     }
+    box.style.transform = `translate(${dx}px, ${dy}px)`;
   }
   function onUp(ev){
     if (ev.pointerId !== pointerId) return;
-    el.removeEventListener("pointermove", onMove);
-    el.removeEventListener("pointerup", onUp);
-    el.removeEventListener("pointercancel", onUp);
-    el.classList.remove("dragging");
+    box.removeEventListener("pointermove", onMove);
+    box.removeEventListener("pointerup", onUp);
+    box.removeEventListener("pointercancel", onUp);
     interacting = false;
-    if (moved){
-      const x = Math.round(startLeft + (lastX - startX) / zoom), y = Math.round(startTop + (lastY - startY) / zoom);
-      el.style.left = x + "px"; el.style.top = y + "px";
-      mark.x = x; mark.y = y;
-      apiMarkUpdate(mark.id, { x, y }).catch(() => toast("No se pudo mover el texto"));
-      const id = mark.id;
-      pushUndo("Movimiento deshecho", async () => {
-        const m = marks.find(x => x.id === id);
-        if (!m) return;
-        m.x = startLeft; m.y = startTop;
-        renderMarks(); applySearchFilter();
-        await apiMarkUpdate(id, { x: startLeft, y: startTop }).catch(() => {});
-      });
-    } else if (ev.type === "pointerup"){
-      editText(mark);
+    if (moved) transformSelection(([x, y]) => [x + dx, y + dy], 1, "Movimiento deshecho");
+    else if (ev.type === "pointerup" && onTap) onTap();
+  }
+  box.addEventListener("pointermove", onMove);
+  box.addEventListener("pointerup", onUp);
+  box.addEventListener("pointercancel", onUp);
+}
+// la esquina de abajo a la derecha agranda o achica todo, desde la de arriba
+// a la izquierda, sin deformar
+function onResizeSelection(e){
+  e.stopPropagation();
+  e.preventDefault();
+  const handle = e.currentTarget, box = handle.parentElement;
+  const b = selectionBox();
+  if (!b) return;
+  const pointerId = e.pointerId;
+  handle.setPointerCapture(pointerId);
+  const ax = b.x1, ay = b.y1, w0 = Math.max(1, b.x2 - b.x1), h0 = Math.max(1, b.y2 - b.y1);
+  const items = selectionEls();
+  // que ningun texto quede ilegible ni gigante
+  const texts = items.filter(x => x.m.kind === "text").map(x => x.m.size);
+  const minF = Math.max(0.1, ...texts.map(sz => MIN_TEXT_SIZE / sz));
+  const maxF = Math.min(10, ...texts.map(sz => MAX_TEXT_SIZE / sz));
+  let f = 1;
+  interacting = true;
+  function onMove(ev){
+    if (ev.pointerId !== pointerId) return;
+    ev.stopPropagation();
+    const p = eventWorld(ev);
+    f = Math.min(maxF, Math.max(minF, ((p.x - ax) + (p.y - ay)) / (w0 + h0)));
+    for (const { m, el } of items){
+      if (m.kind === "stroke") el.setAttribute("transform", `translate(${ax} ${ay}) scale(${f}) translate(${-ax} ${-ay})`);
+      else {
+        el.style.left = (ax + (m.x - ax) * f) + "px";
+        el.style.top = (ay + (m.y - ay) * f) + "px";
+        el.style.fontSize = (m.size * f) + "px";
+      }
+    }
+    box.style.width = (w0 * f) + "px";
+    box.style.height = (h0 * f) + "px";
+  }
+  function onUp(ev){
+    if (ev.pointerId !== pointerId) return;
+    handle.removeEventListener("pointermove", onMove);
+    handle.removeEventListener("pointerup", onUp);
+    handle.removeEventListener("pointercancel", onUp);
+    interacting = false;
+    if (f !== 1) transformSelection(([x, y]) => [ax + (x - ax) * f, ay + (y - ay) * f], f, "Tamaño deshecho");
+    else drawSelection();
+  }
+  handle.addEventListener("pointermove", onMove);
+  handle.addEventListener("pointerup", onUp);
+  handle.addEventListener("pointercancel", onUp);
+}
+// Aplica el movimiento/escala a lo seleccionado, lo guarda y deja el deshacer.
+async function transformSelection(fn, f, undoLabel){
+  const sel = selectedMarks();
+  const r1 = v => Math.round(v * 10) / 10;
+  const prev = sel.map(m => ({ id: m.id, x: m.x, y: m.y, size: m.size, data: m.data }));
+  for (const m of sel){
+    if (m.kind === "stroke"){
+      const points = m.data.points.map(([x, y, pr]) => { const [nx, ny] = fn([x, y]); return [r1(nx), r1(ny), pr]; });
+      m.data = { ...m.data, points };
+      m.size = r1(Math.min(400, Math.max(1, m.size * f)));
+      m.x = Math.min(...points.map(p => p[0])); m.y = Math.min(...points.map(p => p[1]));
+    } else {
+      const [nx, ny] = fn([m.x, m.y]);
+      m.x = Math.round(nx); m.y = Math.round(ny);
+      m.size = Math.round(Math.min(MAX_TEXT_SIZE, Math.max(MIN_TEXT_SIZE, m.size * f)));
     }
   }
-  el.addEventListener("pointermove", onMove);
-  el.addEventListener("pointerup", onUp);
-  el.addEventListener("pointercancel", onUp);
+  renderMarks();
+  applySearchFilter();
+  const save = list => Promise.all(list.map(m => apiMarkUpdate(m.id,
+    m.kind === "stroke" ? { x: m.x, y: m.y, size: m.size, data: m.data } : { x: m.x, y: m.y, size: m.size })));
+  try{ await save(sel); }catch(err){ toast("No se pudo guardar el cambio"); }
+  pushUndo(undoLabel, async () => {
+    const back = [];
+    for (const p of prev){
+      const m = marks.find(x => x.id === p.id);
+      if (m){ Object.assign(m, p); back.push(m); }
+    }
+    renderMarks(); applySearchFilter();
+    await save(back).catch(() => {});
+  });
 }
+
+// --- textos sueltos ---
 // Abre un texto para escribir: uno existente (mark) o uno nuevo en `at`.
 function editText(mark, at){
   if (isReadOnly) return;
   if (textEditing) finishTextEdit();
+  setSelection([]);
   let el;
   if (mark){
     el = markEl(mark.id);
@@ -1326,7 +1490,15 @@ document.addEventListener("keydown",e=>{
   const toolKeys = { v: "move", h: "move", m: "marker", p: "marker", t: "text", e: "eraser" };
   const k = e.key.toLowerCase();
   if (toolKeys[k]){ setTool(toolKeys[k]); return; }
+  if (e.key === "Escape" && selection.length){ setSelection([]); return; }
   if (e.key === "Escape" && tool !== "move"){ setTool("move"); return; }
+  if ((e.key === "Delete" || e.key === "Backspace") && selection.length){
+    e.preventDefault();
+    const ids = selection;
+    setSelection([]);
+    eraseCommit(ids);
+    return;
+  }
   // espacio apretado: arrastrar mueve el lienzo con cualquier herramienta
   if (e.key === " "){
     e.preventDefault();
@@ -1369,6 +1541,19 @@ viewport.addEventListener("pointerdown", (e) => {
   // tocar afuera de un texto que se esta escribiendo lo cierra (y con la
   // herramienta de texto, ese toque no abre otro)
   if (textEditing){ finishTextEdit(); if (tool === "text") return; }
+  // con la herramienta de mover, agarrar un trazo lo selecciona (con su
+  // palabra) y lo arrastra; tocar el corcho vacio suelta la seleccion
+  if (tool === "move" && !spaceDown && !isReadOnly && e.button === 0 && activePointers.size === 0){
+    const p = eventWorld(e), tol = 8 / zoom;
+    const hit = [...marks].reverse().find(m => m.kind === "stroke" && markHit(m, e, p, tol));
+    if (hit){
+      e.preventDefault();
+      selectMark(hit, e.shiftKey);
+      dragSelection(e);
+      return;
+    }
+    if (selection.length && !e.shiftKey) setSelection([]);
+  }
   viewport.setPointerCapture(e.pointerId);
   activePointers.set(e.pointerId, { x:e.clientX, y:e.clientY });
   if (activePointers.size === 2){
@@ -1384,7 +1569,7 @@ viewport.addEventListener("pointerdown", (e) => {
 });
 // doble clic en el corcho vacio: un texto ahi mismo
 viewport.addEventListener("dblclick", (e) => {
-  if (tool !== "move" || isReadOnly || e.target.closest(".card") || e.target.closest(".mark-text") || e.target.closest("[data-cut]")) return;
+  if (tool !== "move" || isReadOnly || e.target.closest(".card") || e.target.closest(".mark-text") || e.target.closest(".mark-selection") || e.target.closest("[data-cut]")) return;
   editText(null, eventWorld(e));
 });
 viewport.addEventListener("pointermove", (e) => {
