@@ -104,7 +104,7 @@
     background-color:var(--pc); background-image:var(--paper-grain);
     position:absolute; width:240px; border-radius:10px; padding:20px 18px 16px;
     box-shadow:rgba(70,52,28,.20) 0 14px 34px, rgba(70,55,30,.10) 0 2px 8px;
-    cursor:grab; transition:box-shadow .18s; touch-action:none; user-select:none;
+    cursor:grab; transition:box-shadow .18s; touch-action:none; user-select:none; -webkit-user-select:none; -webkit-user-drag:none; -webkit-touch-callout:none;
     display:flex; flex-direction:column;
   }
   .card:hover{box-shadow:rgba(70,52,28,.28) 0 22px 50px}

@@ -268,7 +268,7 @@ function createCardEl(n){
     ${n.done ? `<div class="stamp">HECHO</div>` : ""}
     <button class="del" data-del="${n.id}" title="Sacar del corcho">×</button>
     <button class="check" data-done="${n.id}" title="Marcar como hecha">✓</button>
-    ${n.image_path?`<img class="thumb" src="/media/${n.id}" alt="">`:""}
+    ${n.image_path?`<img class="thumb" src="/media/${n.id}" alt="" draggable="false">`:""}
     ${n.title?`<h3>${esc(n.title)}</h3>`:""}
     <div class="body">${esc(n.body)}</div>
     ${n.tags?`<div class="tags">${esc(n.tags)}</div>`:""}
@@ -289,16 +289,26 @@ function onCardPointerDown(e, note, el){
   e.stopPropagation();
   if (isReadOnly){ openDetail(note, el); return; }
   if (e.target.closest(".fastener")){ startLinking(e, note, el); return; }
+  const pointerId = e.pointerId;
   const startX = e.clientX, startY = e.clientY;
   const startLeft = note.x ?? 0, startTop = note.y ?? 0;
+  // ultima posicion conocida del puntero: al soltar se usa esta y no la del
+  // evento final, porque pointercancel (ej. el navegador arranca un arrastre
+  // nativo de la foto, o un toque largo en el celu) llega con coordenadas 0,0
+  // y mandaba la nota lejisimos.
+  let lastX = startX, lastY = startY;
   let moved = false;
   interacting = true;
-  el.setPointerCapture(e.pointerId);
+  el.setPointerCapture(pointerId);
 
   function onMove(ev){
-    const dx = (ev.clientX - startX) / zoom;
-    const dy = (ev.clientY - startY) / zoom;
-    if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) > 4){
+    if (ev.pointerId !== pointerId) return;
+    // que el movimiento no llegue tambien al lienzo y lo arrastre a la vez
+    ev.stopPropagation();
+    lastX = ev.clientX; lastY = ev.clientY;
+    const dx = (lastX - startX) / zoom;
+    const dy = (lastY - startY) / zoom;
+    if (!moved && Math.hypot(lastX - startX, lastY - startY) > 4){
       moved = true;
       el.classList.add("dragging");
       gsap.to(el, { scale: 1.08, duration: 0.18, ease: "power2.out" });
@@ -310,20 +320,25 @@ function onCardPointerDown(e, note, el){
     }
   }
   function onUp(ev){
+    if (ev.pointerId !== pointerId) return;
     el.removeEventListener("pointermove", onMove);
     el.removeEventListener("pointerup", onUp);
     el.removeEventListener("pointercancel", onUp);
     el.classList.remove("dragging");
     interacting = false;
+    if (ev.type === "pointerup"){ lastX = ev.clientX; lastY = ev.clientY; }
     if (moved){
       gsap.to(el, { scale: 1, duration: 0.55, ease: "elastic.out(1, 0.5)" });
-      const dx = (ev.clientX - startX) / zoom;
-      const dy = (ev.clientY - startY) / zoom;
+      const dx = (lastX - startX) / zoom;
+      const dy = (lastY - startY) / zoom;
+      el.style.left = (startLeft + dx) + "px";
+      el.style.top = (startTop + dy) + "px";
+      drawStrings();
       const newX = Math.round(startLeft + dx), newY = Math.round(startTop + dy);
       lastDragUndo = { id: note.id, prevX: startLeft, prevY: startTop };
       note.x = newX; note.y = newY;
       apiPosition(note.id, newX, newY);
-    } else {
+    } else if (ev.type === "pointerup"){
       openDetail(note, el);
     }
   }
@@ -839,6 +854,9 @@ viewport.addEventListener("pointerdown", (e) => {
 });
 viewport.addEventListener("pointermove", (e) => {
   if (!activePointers.has(e.pointerId)) return;
+  // si se perdio el pointerup (ej. se solto el boton fuera de la ventana),
+  // no seguir arrastrando el lienzo con el mouse suelto
+  if (e.pointerType === "mouse" && e.buttons === 0){ endPan(e); return; }
   activePointers.set(e.pointerId, { x:e.clientX, y:e.clientY });
   if (pinch && activePointers.size >= 2){
     const { dist, mid } = pinchInfo();
