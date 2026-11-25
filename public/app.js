@@ -25,10 +25,16 @@ const COLORS = [
 ];
 let notes = [];
 let links = []; // hilos rojos: { id, a, b }
+let marks = []; // marcador y textos sueltos: { id, kind: "stroke"|"text", x, y, color, size, data }
 let editingId = null;
 let pickedColor = COLORS[0];
 let pendingPos = null;
-let lastDragUndo = null;
+// Ctrl+Z: lo ultimo que se hizo (mover una nota, un trazo, un texto, borrar)
+const undoStack = [];
+function pushUndo(label, run){
+  undoStack.push({ label, run });
+  if (undoStack.length > 40) undoStack.shift();
+}
 let knownNoteIds = new Set();
 let hasRenderedOnce = false;
 let isReadOnly = false;
@@ -60,11 +66,22 @@ function setZoomAt(cx, cy, newZoom){
 }
 function fitAll(){
   const rect = $("#viewport").getBoundingClientRect();
-  if(!notes.length){ zoom = 1; pan.x = rect.width/2; pan.y = rect.height/2; applyTransform(); saveView(); return; }
-  const xs = notes.map(n=>n.x ?? 0), ys = notes.map(n=>n.y ?? 0);
+  if(!notes.length && !marks.length){ zoom = 1; pan.x = rect.width/2; pan.y = rect.height/2; applyTransform(); saveView(); return; }
   // margen generoso: las notas miden hasta ~270px y arriba estan los filtros
-  const minX = Math.min(...xs) - 190, maxX = Math.max(...xs) + 190;
-  const minY = Math.min(...ys) - 260, maxY = Math.max(...ys) + 190;
+  const xs = [], ys = [];
+  for (const n of notes){ xs.push((n.x ?? 0) - 190, (n.x ?? 0) + 190); ys.push((n.y ?? 0) - 260, (n.y ?? 0) + 190); }
+  for (const m of marks){
+    if (m.kind === "stroke"){
+      for (const [px, py] of m.data.points){ xs.push(px - 40, px + 40); ys.push(py - 60, py + 40); }
+    } else {
+      const lines = m.data.text.split("\n");
+      const longest = Math.max(...lines.map(l => l.length));
+      xs.push(m.x - 40, m.x + longest * m.size * 0.45 + 40);
+      ys.push(m.y - 80, m.y + lines.length * m.size * 1.1 + 40);
+    }
+  }
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
   const w = Math.max(1, maxX - minX), h = Math.max(1, maxY - minY);
   zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.min(rect.width / w, rect.height / h)));
   const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
@@ -120,9 +137,10 @@ async function loadMe(){
   setupPush(me.pushKey);
 }
 async function loadNotes(){
-  const [rn, rl] = await Promise.all([fetch("/api/notes"), fetch("/api/links")]);
+  const [rn, rl, rm] = await Promise.all([fetch("/api/notes"), fetch("/api/links"), fetch("/api/marks")]);
   notes = await checkAuth(rn).json();
   links = await checkAuth(rl).json();
+  marks = await checkAuth(rm).json();
 }
 async function apiCreate(note){
   const r = checkAuth(await fetch("/api/notes", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(note) }));
@@ -335,7 +353,11 @@ function onCardPointerDown(e, note, el){
       el.style.top = (startTop + dy) + "px";
       drawStrings();
       const newX = Math.round(startLeft + dx), newY = Math.round(startTop + dy);
-      lastDragUndo = { id: note.id, prevX: startLeft, prevY: startTop };
+      const id = note.id;
+      pushUndo("Movimiento deshecho", () => {
+        const n = notes.find(x => x.id === id);
+        if (n){ n.x = startLeft; n.y = startTop; apiPosition(id, startLeft, startTop); render(); }
+      });
       note.x = newX; note.y = newY;
       apiPosition(note.id, newX, newY);
     } else if (ev.type === "pointerup"){
@@ -384,12 +406,17 @@ function onResizePointerDown(e, note, el){
 }
 
 function render(){
+  if (textEditing) finishTextEdit();
   const world = $("#world");
   world.innerHTML = "";
-  if (!notes.length){
-    $("#emptyState").style.display = "flex";
-  } else {
-    $("#emptyState").style.display = "none";
+  // lo escrito sobre el corcho va primero: queda debajo de las notas
+  const layer = document.createElement("div");
+  layer.className = "marks";
+  layer.id = "marks";
+  world.appendChild(layer);
+  renderMarks();
+  $("#emptyState").style.display = notes.length || marks.length ? "none" : "flex";
+  if (notes.length){
     const freshIds = [];
     // notes viene ordenado mas-nuevo-primero (para /listar del bot, etc).
     // Para el pintado hay que invertirlo: el ultimo <div> agregado al DOM
@@ -578,6 +605,470 @@ function startLinking(e, note, el){
   handle.addEventListener("pointercancel", onUp);
 }
 
+// --- marcador y textos sueltos, escritos directo sobre el corcho ---
+// Quedan debajo de las notas. Todo se guarda en coordenadas del lienzo, asi
+// que acompaña el pan y el zoom sin hacer nada.
+const INKS = [
+  { c: "#2B241C", n: "Negro" },
+  { c: "#C8312B", n: "Rojo" },
+  { c: "#2457A6", n: "Azul" },
+  { c: "#2E7D4F", n: "Verde" },
+  { c: "#F7F3EA", n: "Tiza blanca" },
+];
+const INK_SIZES = { thin: { stroke: 5, text: 32 }, thick: { stroke: 11, text: 58 } };
+const INK_KEY = "corcho.ink.v1";
+const MAX_STROKE_POINTS = 2800; // el server acepta hasta 3000
+let ink = { color: INKS[0].c, size: "thin" };
+try { ink = { ...ink, ...JSON.parse(localStorage.getItem(INK_KEY)) }; } catch(e){}
+if (!INKS.some(i => i.c === ink.color)) ink.color = INKS[0].c;
+if (!INK_SIZES[ink.size]) ink.size = "thin";
+function saveInk(){ try { localStorage.setItem(INK_KEY, JSON.stringify(ink)); } catch(e){} }
+
+let tool = "move";       // move | marker | text | eraser
+let spaceDown = false;   // espacio apretado: arrastrar mueve el lienzo con cualquier herramienta
+let inkGesture = null;   // trazo, borrado o toque de texto en curso
+let textEditing = null;  // texto que se esta escribiendo
+
+async function apiMarkCreate(m){
+  const r = checkAuth(await fetch("/api/marks", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(m) }));
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+async function apiMarkUpdate(id, fields){
+  const r = checkAuth(await fetch("/api/marks/" + encodeURIComponent(id), { method:"PATCH", headers:{"Content-Type":"application/json"}, body:JSON.stringify(fields) }));
+  if (!r.ok) throw new Error("HTTP " + r.status);
+}
+async function apiMarkDelete(id){
+  checkAuth(await fetch("/api/marks/" + encodeURIComponent(id), { method:"DELETE" }));
+}
+async function apiMarkRestore(id){
+  checkAuth(await fetch("/api/marks/" + encodeURIComponent(id) + "/restore", { method:"POST" }));
+}
+
+// Contorno de un trazo de marcador: la linea se suaviza un poco y el ancho
+// varia con la presion del lapiz (o, con mouse/dedo, con la velocidad: mas
+// rapido = mas fino), como en Excalidraw. Devuelve el path SVG relleno.
+function inkPath(points, size, pen){
+  const STREAMLINE = 0.45, THINNING = 0.5;
+  const pts = [];
+  let prev = null;
+  for (const [x, y, p] of points){
+    const cur = prev ? [prev[0] + (x - prev[0]) * (1 - STREAMLINE), prev[1] + (y - prev[1]) * (1 - STREAMLINE), p] : [x, y, p];
+    if (prev && Math.hypot(cur[0] - prev[0], cur[1] - prev[1]) < 0.5) continue;
+    pts.push(cur); prev = cur;
+  }
+  // el suavizado se queda atras: que el trazo termine donde se solto
+  const last = points[points.length - 1];
+  if (pts.length > 1 && Math.hypot(last[0] - prev[0], last[1] - prev[1]) >= 0.5) pts.push(last);
+  const n = pts.length;
+  const f = v => Math.round(v * 10) / 10;
+  if (n === 1){
+    const [x, y] = pts[0], r = size / 2;
+    return `M${f(x - r)},${f(y)} a${r},${r} 0 1,0 ${r * 2},0 a${r},${r} 0 1,0 ${-r * 2},0Z`;
+  }
+  // radio de cada punto
+  const radii = [];
+  let pr = 0.5;
+  for (let i = 0; i < n; i++){
+    if (pen) pr = pts[i][2];
+    else if (i > 0){
+      const sp = Math.min(1, Math.hypot(pts[i][0] - pts[i-1][0], pts[i][1] - pts[i-1][1]) / size);
+      pr = Math.min(1, pr + (Math.min(1, 1 - sp) - pr) * sp * 0.275);
+    }
+    radii.push(Math.max(0.6, (size / 2) * (1 - THINNING * (0.5 - pr))));
+  }
+  // direccion de avance en cada punto
+  const dirs = [];
+  let lastDir = [1, 0];
+  for (let i = 0; i < n; i++){
+    const a = pts[Math.max(0, i - 1)], b = pts[Math.min(n - 1, i + 1)];
+    const dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy);
+    if (len > 1e-6) lastDir = [dx / len, dy / len];
+    dirs.push(lastDir);
+  }
+  const left = [], right = [];
+  for (let i = 0; i < n; i++){
+    const [x, y] = pts[i], [dx, dy] = dirs[i], r = radii[i];
+    left.push([x - dy * r, y + dx * r]);
+    right.push([x + dy * r, y - dx * r]);
+  }
+  // puntas redondeadas: media vuelta alrededor del primer y el ultimo punto
+  const cap = (i, sign) => {
+    const out = [], [x, y] = pts[i], [dx, dy] = dirs[i], r = radii[i];
+    for (let k = 1; k < 8; k++){
+      const t = Math.PI * k / 8, c = Math.cos(t) * sign, s = Math.sin(t) * sign;
+      out.push([x + r * (-dy * c + dx * s), y + r * (dx * c + dy * s)]);
+    }
+    return out;
+  };
+  const poly = [...left, ...cap(n - 1, 1), ...right.reverse(), ...cap(0, -1)];
+  let d = `M${f(poly[0][0])},${f(poly[0][1])} Q`;
+  for (let i = 0; i < poly.length; i++){
+    const [x0, y0] = poly[i], [x1, y1] = poly[(i + 1) % poly.length];
+    d += `${f(x0)},${f(y0)} ${f((x0 + x1) / 2)},${f((y0 + y1) / 2)} `;
+  }
+  return d + "Z";
+}
+
+function markEl(id){ return document.querySelector(`#marks [data-mark="${CSS.escape(id)}"]`); }
+function createTextEl(m){
+  const el = document.createElement("div");
+  el.className = "mark-text";
+  el.dataset.mark = m.id;
+  el.textContent = m.data.text;
+  el.style.left = m.x + "px";
+  el.style.top = m.y + "px";
+  el.style.color = m.color;
+  el.style.fontSize = m.size + "px";
+  el.addEventListener("pointerdown", (e) => onTextPointerDown(e, m, el));
+  return el;
+}
+function renderMarks(){
+  const layer = document.getElementById("marks");
+  if (!layer) return;
+  layer.innerHTML = "";
+  const svg = svgEl("svg", { class: "marks-svg" });
+  layer.appendChild(svg);
+  for (const m of marks){
+    if (m.kind === "stroke"){
+      svg.appendChild(svgEl("path", { d: inkPath(m.data.points, m.size, m.data.pen), fill: m.color, "data-mark": m.id }));
+    } else if (m.kind === "text"){
+      layer.appendChild(createTextEl(m));
+    }
+  }
+}
+
+function eventWorld(e){
+  const rect = viewport.getBoundingClientRect();
+  return screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+}
+function setTool(t){
+  if (textEditing) finishTextEdit();
+  tool = t;
+  document.body.classList.remove("tool-move", "tool-marker", "tool-text", "tool-eraser");
+  document.body.classList.add("tool-" + t);
+  document.querySelectorAll("#drawTools [data-tool]").forEach(b => b.classList.toggle("on", b.dataset.tool === t));
+  updateToolOpts();
+}
+// colores y grosor: se ven con el marcador, con el texto o mientras se
+// escribe un texto (y en ese caso cambian ese texto)
+function updateToolOpts(){
+  const show = tool === "marker" || tool === "text" || !!textEditing;
+  $("#toolOpts").classList.toggle("show", show);
+  const color = textEditing ? textEditing.color : ink.color;
+  const size = textEditing ? (textEditing.size >= INK_SIZES.thick.text ? "thick" : "thin") : ink.size;
+  $("#inkColors").innerHTML = INKS.map(i =>
+    `<button class="ink-swatch${i.c === color ? " sel" : ""}" data-ink="${i.c}" title="${i.n}" style="background:${i.c}"></button>`
+  ).join("");
+  $("#inkSize").classList.toggle("thick", size === "thick");
+  $("#inkSize").title = size === "thick" ? "Grueso (tocá para fino)" : "Fino (tocá para grueso)";
+}
+// que tocar la barra no le saque el foco al texto que se esta escribiendo
+$("#drawTools").addEventListener("pointerdown", (e) => { if (e.target.closest("button")) e.preventDefault(); });
+$("#drawTools").addEventListener("click", (e) => {
+  const t = e.target.closest("[data-tool]");
+  if (t){ setTool(t.dataset.tool); return; }
+  const sw = e.target.closest("[data-ink]");
+  if (sw){
+    if (textEditing){ textEditing.color = sw.dataset.ink; textEditing.el.style.color = sw.dataset.ink; }
+    else { ink.color = sw.dataset.ink; saveInk(); }
+    updateToolOpts();
+    return;
+  }
+  if (e.target.closest("#inkSize")){
+    if (textEditing){
+      const thick = textEditing.size < INK_SIZES.thick.text;
+      textEditing.size = INK_SIZES[thick ? "thick" : "thin"].text;
+      textEditing.el.style.fontSize = textEditing.size + "px";
+    } else { ink.size = ink.size === "thick" ? "thin" : "thick"; saveInk(); }
+    updateToolOpts();
+  }
+});
+
+// --- gestos de dibujo sobre el lienzo (los llama el manejo de punteros) ---
+function startInk(e){
+  if (tool === "marker"){
+    const path = svgEl("path", { fill: ink.color, class: "drawing" });
+    document.querySelector("#marks .marks-svg").appendChild(path);
+    inkGesture = { type: "stroke", pointerId: e.pointerId, pen: e.pointerType === "pen", color: ink.color, size: INK_SIZES[ink.size].stroke, points: [], path, raf: 0 };
+    interacting = true;
+    addInkPoint(e);
+    return true;
+  }
+  if (tool === "eraser"){
+    inkGesture = { type: "eraser", pointerId: e.pointerId, erased: new Set() };
+    interacting = true;
+    eraseAt(e);
+    return true;
+  }
+  if (tool === "text"){
+    inkGesture = { type: "text", pointerId: e.pointerId, sx: e.clientX, sy: e.clientY, at: eventWorld(e) };
+    return true;
+  }
+  return false;
+}
+function addInkPoint(e){
+  const g = inkGesture;
+  const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+  for (const ev of evs.length ? evs : [e]){
+    const p = eventWorld(ev);
+    const last = g.points[g.points.length - 1];
+    if (last && Math.hypot(p.x - last[0], p.y - last[1]) < 1 / zoom) continue;
+    g.points.push([Math.round(p.x * 10) / 10, Math.round(p.y * 10) / 10, g.pen ? (ev.pressure || 0.5) : 0.5]);
+  }
+  if (!g.raf) g.raf = requestAnimationFrame(() => {
+    g.raf = 0;
+    if (g.points.length) g.path.setAttribute("d", inkPath(g.points, g.size, g.pen));
+  });
+  // un trazo larguisimo se parte en varios, asi cada uno entra en el server
+  if (g.points.length >= MAX_STROKE_POINTS){
+    const tail = g.points[g.points.length - 1];
+    commitStroke(g);
+    const path = svgEl("path", { fill: g.color, class: "drawing" });
+    document.querySelector("#marks .marks-svg").appendChild(path);
+    inkGesture = { ...g, points: [tail], path, raf: 0 };
+  }
+}
+function moveInk(e){
+  const g = inkGesture;
+  if (g.type === "stroke") addInkPoint(e);
+  else if (g.type === "eraser") eraseAt(e);
+  else if (g.type === "text" && Math.hypot(e.clientX - g.sx, e.clientY - g.sy) > 6){
+    // con la herramienta de texto, arrastrar sigue moviendo el lienzo
+    inkGesture = null;
+    startPanFrom({ x: g.sx, y: g.sy });
+  }
+}
+function endInk(e){
+  const g = inkGesture;
+  inkGesture = null;
+  interacting = false;
+  if (g.type === "stroke"){
+    if (g.raf) cancelAnimationFrame(g.raf);
+    commitStroke(g);
+  } else if (g.type === "eraser"){
+    if (g.erased.size) eraseCommit([...g.erased]);
+  } else if (g.type === "text" && e.type === "pointerup"){
+    editText(null, g.at);
+  }
+}
+// otro dedo apoyado = es un pellizco, no un trazo: se descarta lo empezado
+function cancelInk(){
+  const g = inkGesture;
+  if (!g) return;
+  inkGesture = null;
+  interacting = false;
+  if (g.type === "stroke"){ if (g.raf) cancelAnimationFrame(g.raf); g.path.remove(); }
+  if (g.type === "eraser") g.erased.forEach(id => { const el = markEl(id); if (el) el.style.display = ""; });
+}
+async function commitStroke(g){
+  if (!g.points.length){ g.path.remove(); return; }
+  g.path.setAttribute("d", inkPath(g.points, g.size, g.pen));
+  const xs = g.points.map(p => p[0]), ys = g.points.map(p => p[1]);
+  try{
+    const m = await apiMarkCreate({ kind: "stroke", x: Math.min(...xs), y: Math.min(...ys), color: g.color, size: g.size, data: { points: g.points, pen: g.pen } });
+    marks.push(m);
+    g.path.setAttribute("data-mark", m.id);
+    g.path.classList.remove("drawing");
+    pushUndo("Trazo deshecho", () => removeMarks([m.id]));
+  }catch(err){
+    g.path.remove();
+    toast("No se pudo guardar el trazo");
+  }
+}
+
+// --- goma: borra trazos y textos enteros, como en Excalidraw ---
+function distToSegment(px, py, ax, ay, bx, by){
+  const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
+  const t = len2 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2)) : 0;
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+function eraseAt(e){
+  const g = inkGesture;
+  const p = eventWorld(e);
+  const tol = 10 / zoom;
+  for (const m of marks){
+    if (g.erased.has(m.id)) continue;
+    let hit = false;
+    if (m.kind === "stroke"){
+      const pts = m.data.points, reach = m.size / 2 + tol;
+      if (pts.length === 1) hit = Math.hypot(p.x - pts[0][0], p.y - pts[0][1]) <= reach;
+      for (let i = 1; i < pts.length && !hit; i++){
+        hit = distToSegment(p.x, p.y, pts[i-1][0], pts[i-1][1], pts[i][0], pts[i][1]) <= reach;
+      }
+    } else {
+      const el = markEl(m.id);
+      const r = el && el.getBoundingClientRect();
+      hit = !!r && e.clientX >= r.left - 6 && e.clientX <= r.right + 6 && e.clientY >= r.top - 6 && e.clientY <= r.bottom + 6;
+    }
+    if (hit){
+      g.erased.add(m.id);
+      const el = markEl(m.id);
+      if (el) el.style.display = "none";
+    }
+  }
+}
+async function removeMarks(ids){
+  marks = marks.filter(m => !ids.includes(m.id));
+  renderMarks();
+  applySearchFilter();
+  await Promise.all(ids.map(id => apiMarkDelete(id).catch(() => {})));
+}
+async function restoreMarks(ids){
+  await Promise.all(ids.map(id => apiMarkRestore(id).catch(() => {})));
+  await loadNotes();
+  render();
+}
+async function eraseCommit(ids){
+  await removeMarks(ids);
+  const undo = () => restoreMarks(ids);
+  pushUndo("Borrado deshecho", undo);
+  toast(ids.length === 1 ? "Borrado" : `${ids.length} cosas borradas`, {
+    action: "Deshacer", duration: 5000,
+    onAction: async () => { const i = undoStack.findIndex(u => u.run === undo); if (i >= 0) undoStack.splice(i, 1); await undo(); },
+  });
+}
+
+// --- textos sueltos ---
+function onTextPointerDown(e, mark, el){
+  if (el.classList.contains("editing")){ e.stopPropagation(); return; }
+  // solo lectura, marcador o goma: el toque sigue de largo al lienzo
+  if (isReadOnly || spaceDown) return;
+  if (e.pointerType === "mouse" && e.button !== 0) return;
+  if (tool === "text"){ e.stopPropagation(); e.preventDefault(); editText(mark); return; }
+  if (tool !== "move") return;
+  // con la herramienta de mover: arrastrar lo mueve, tocarlo lo edita
+  e.stopPropagation();
+  e.preventDefault();
+  const pointerId = e.pointerId;
+  const startX = e.clientX, startY = e.clientY, startLeft = mark.x, startTop = mark.y;
+  let lastX = startX, lastY = startY, moved = false;
+  interacting = true;
+  el.setPointerCapture(pointerId);
+  function onMove(ev){
+    if (ev.pointerId !== pointerId) return;
+    ev.stopPropagation();
+    lastX = ev.clientX; lastY = ev.clientY;
+    if (!moved && Math.hypot(lastX - startX, lastY - startY) > 4){ moved = true; el.classList.add("dragging"); }
+    if (moved){
+      el.style.left = (startLeft + (lastX - startX) / zoom) + "px";
+      el.style.top = (startTop + (lastY - startY) / zoom) + "px";
+    }
+  }
+  function onUp(ev){
+    if (ev.pointerId !== pointerId) return;
+    el.removeEventListener("pointermove", onMove);
+    el.removeEventListener("pointerup", onUp);
+    el.removeEventListener("pointercancel", onUp);
+    el.classList.remove("dragging");
+    interacting = false;
+    if (moved){
+      const x = Math.round(startLeft + (lastX - startX) / zoom), y = Math.round(startTop + (lastY - startY) / zoom);
+      el.style.left = x + "px"; el.style.top = y + "px";
+      mark.x = x; mark.y = y;
+      apiMarkUpdate(mark.id, { x, y }).catch(() => toast("No se pudo mover el texto"));
+      const id = mark.id;
+      pushUndo("Movimiento deshecho", async () => {
+        const m = marks.find(x => x.id === id);
+        if (!m) return;
+        m.x = startLeft; m.y = startTop;
+        renderMarks(); applySearchFilter();
+        await apiMarkUpdate(id, { x: startLeft, y: startTop }).catch(() => {});
+      });
+    } else if (ev.type === "pointerup"){
+      editText(mark);
+    }
+  }
+  el.addEventListener("pointermove", onMove);
+  el.addEventListener("pointerup", onUp);
+  el.addEventListener("pointercancel", onUp);
+}
+// Abre un texto para escribir: uno existente (mark) o uno nuevo en `at`.
+function editText(mark, at){
+  if (isReadOnly) return;
+  if (textEditing) finishTextEdit();
+  let el;
+  if (mark){
+    el = markEl(mark.id);
+    if (!el) return;
+  } else {
+    const size = INK_SIZES[ink.size].text;
+    // que el punto tocado quede a la altura de la primera linea
+    at = { x: Math.round(at.x - 6), y: Math.round(at.y - size * 0.6) };
+    el = createTextEl({ id: "", x: at.x, y: at.y, color: ink.color, size, data: { text: "" } });
+    document.getElementById("marks").appendChild(el);
+  }
+  textEditing = {
+    el, mark,
+    x: mark ? mark.x : at.x, y: mark ? mark.y : at.y,
+    color: mark ? mark.color : ink.color,
+    size: mark ? mark.size : INK_SIZES[ink.size].text,
+  };
+  el.classList.add("editing");
+  try { el.contentEditable = "plaintext-only"; } catch(err){ el.contentEditable = "true"; }
+  if (el.contentEditable !== "plaintext-only") el.contentEditable = "true";
+  el.addEventListener("keydown", onTextKey);
+  el.addEventListener("blur", onTextBlur);
+  el.focus();
+  // cursor al final
+  const sel = window.getSelection(), range = document.createRange();
+  range.selectNodeContents(el); range.collapse(false);
+  sel.removeAllRanges(); sel.addRange(range);
+  updateToolOpts();
+}
+function onTextKey(e){
+  e.stopPropagation(); // que las teclas no cambien de herramienta
+  if (e.key === "Escape"){ e.preventDefault(); finishTextEdit(true); }
+  else if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); finishTextEdit(); }
+}
+function onTextBlur(){ finishTextEdit(); }
+async function finishTextEdit(cancel = false){
+  const st = textEditing;
+  if (!st) return;
+  textEditing = null;
+  const { el, mark } = st;
+  el.removeEventListener("keydown", onTextKey);
+  el.removeEventListener("blur", onTextBlur);
+  el.classList.remove("editing");
+  el.contentEditable = "false";
+  if (document.activeElement === el) el.blur();
+  updateToolOpts();
+  const text = el.innerText.replace(/ /g, " ").replace(/\s+$/, "");
+  if (cancel){
+    if (!mark) el.remove();
+    else { el.textContent = mark.data.text; el.style.color = mark.color; el.style.fontSize = mark.size + "px"; }
+    return;
+  }
+  if (!mark){
+    if (!text.trim()){ el.remove(); return; }
+    try{
+      const m = await apiMarkCreate({ kind: "text", x: st.x, y: st.y, color: st.color, size: st.size, data: { text } });
+      marks.push(m);
+      el.remove();
+      document.getElementById("marks").appendChild(createTextEl(m));
+      applySearchFilter();
+      pushUndo("Texto deshecho", () => removeMarks([m.id]));
+    }catch(err){ el.remove(); toast("No se pudo guardar el texto"); }
+    return;
+  }
+  if (!text.trim()){ eraseCommit([mark.id]); return; }
+  if (text === mark.data.text && st.color === mark.color && st.size === mark.size){ el.textContent = text; return; }
+  const prev = { color: mark.color, size: mark.size, data: mark.data };
+  mark.color = st.color; mark.size = st.size; mark.data = { text };
+  el.textContent = text;
+  const id = mark.id;
+  try{ await apiMarkUpdate(id, { color: mark.color, size: mark.size, data: mark.data }); }
+  catch(err){ toast("No se pudo guardar el texto"); }
+  applySearchFilter();
+  pushUndo("Cambio deshecho", async () => {
+    const m = marks.find(x => x.id === id);
+    if (!m) return;
+    Object.assign(m, prev);
+    renderMarks(); applySearchFilter();
+    await apiMarkUpdate(id, prev).catch(() => {});
+  });
+}
+
 function applySearchFilter(){
   const q = norm($("#search").value.trim());
   const cards = $("#world").querySelectorAll(".card");
@@ -591,6 +1082,12 @@ function applySearchFilter(){
     el.style.pointerEvents = isMatch ? "auto" : "none";
     if (shown){ visible++; if (isMatch) matches++; }
   });
+  // textos sueltos: tambien se buscan; los trazos se apagan mientras se busca
+  $("#world").querySelectorAll(".mark-text:not(.editing)").forEach(el => {
+    el.style.opacity = !q || norm(el.textContent).includes(q) ? "" : "0.2";
+  });
+  const msvg = $("#world .marks-svg");
+  if (msvg) msvg.style.opacity = q ? "0.35" : "";
   drawStrings();
   const filtered = visible !== notes.length;
   $("#count").textContent = notes.length
@@ -602,11 +1099,13 @@ function focusFirstMatch(){
   const q = norm($("#search").value.trim());
   if (!q) return;
   const match = notes.find(n => passesFilters(n) && noteMatches(n, q));
-  if (!match){ toast("Sin resultados"); return; }
+  const textMatch = !match && marks.find(m => m.kind === "text" && norm(m.data.text).includes(q));
+  if (!match && !textMatch){ toast("Sin resultados"); return; }
   const rect = $("#viewport").getBoundingClientRect();
   zoom = Math.max(zoom, 0.8);
-  pan.x = rect.width/2 - (match.x ?? 0) * zoom;
-  pan.y = rect.height/2 - (match.y ?? 0) * zoom;
+  const fx = match ? (match.x ?? 0) : textMatch.x + 80, fy = match ? (match.y ?? 0) : textMatch.y + textMatch.size / 2;
+  pan.x = rect.width/2 - fx * zoom;
+  pan.y = rect.height/2 - fy * zoom;
   applyTransform();
   saveView();
 }
@@ -762,7 +1261,7 @@ function blobToDataUrl(blob){
   return new Promise((resolve, reject)=>{ const r=new FileReader(); r.onload=()=>resolve(r.result); r.onerror=reject; r.readAsDataURL(blob); });
 }
 $("#exportBtn").onclick=async ()=>{
-  if(!notes.length){ toast("No hay nada para exportar"); return; }
+  if(!notes.length && !marks.length){ toast("No hay nada para exportar"); return; }
   toast("Armando backup…");
   // las fotos van embebidas en el backup, asi el archivo se restaura solo
   const out = await Promise.all(notes.map(async n=>{
@@ -776,7 +1275,10 @@ $("#exportBtn").onclick=async ()=>{
     }
     return copy;
   }));
-  const backup = { version: 2, notes: out, links: links.map(l => ({ a: l.a, b: l.b })) };
+  const backup = {
+    version: 3, notes: out, links: links.map(l => ({ a: l.a, b: l.b })),
+    marks: marks.map(({ id, ...m }) => m),
+  };
   const blob=new Blob([JSON.stringify(backup,null,2)],{type:"application/json"});
   const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
   a.download="corcho-backup-"+new Date().toISOString().slice(0,10)+".json"; a.click();
@@ -794,36 +1296,58 @@ $("#importFile").onchange=(e)=>{
     // backups viejos: una lista de notas; nuevos: { notes, links }
     const bNotes = Array.isArray(d) ? d : (d && Array.isArray(d.notes) ? d.notes : null);
     const bLinks = d && Array.isArray(d.links) ? d.links : [];
+    const bMarks = d && Array.isArray(d.marks) ? d.marks : [];
     if(!bNotes){ toast("Archivo inválido"); return; }
-    if(!confirm(`¿Importar ${bNotes.length} nota${bNotes.length===1?"":"s"} al corcho? Se suman a las que ya tenés.`)) return;
+    const extra = bMarks.length ? ` (y ${bMarks.length} trazo${bMarks.length===1?"":"s"}/texto${bMarks.length===1?"":"s"} escritos en el corcho)` : "";
+    if(!confirm(`¿Importar ${bNotes.length} nota${bNotes.length===1?"":"s"}${extra} al corcho? Se suman a lo que ya tenés.`)) return;
     try{
       const res = checkAuth(await fetch("/api/notes/import", {
-        method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ notes:bNotes, links:bLinks })
+        method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ notes:bNotes, links:bLinks, marks:bMarks })
       }));
       if(!res.ok) throw new Error("HTTP "+res.status);
-      const { imported } = await res.json();
+      const { imported, marks: importedMarks = 0 } = await res.json();
       await loadNotes(); render();
-      toast(`${imported} nota${imported===1?"":"s"} importada${imported===1?"":"s"}`);
+      toast(`${imported} nota${imported===1?"":"s"} importada${imported===1?"":"s"}` + (importedMarks ? ` + ${importedMarks} trazos/textos` : ""));
     }catch(err){ toast("No se pudo importar el backup"); }
   };
   r.readAsText(f);
 };
 document.addEventListener("keydown",e=>{
-  if(e.key==="Escape"){ document.querySelectorAll(".overlay.open").forEach(o=>o.classList.remove("open")); }
+  if(e.key==="Escape"&&anyOverlayOpen()){ document.querySelectorAll(".overlay.open").forEach(o=>o.classList.remove("open")); return; }
   if((e.ctrlKey||e.metaKey)&&e.key==="Enter"&&$("#editOverlay").classList.contains("open")){ $("#saveEdit").click(); }
-  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="z"&&!anyOverlayOpen()&&lastDragUndo){
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="z"&&!anyOverlayOpen()&&!isTypingTarget(e.target)&&undoStack.length){
     e.preventDefault();
-    const { id, prevX, prevY } = lastDragUndo;
-    const n = notes.find(x=>x.id===id);
-    if(n){ n.x=prevX; n.y=prevY; apiPosition(id, prevX, prevY); render(); toast("Movimiento deshecho"); }
-    lastDragUndo = null;
+    const u = undoStack.pop();
+    Promise.resolve(u.run()).then(() => toast(u.label));
+    return;
+  }
+  if (isTypingTarget(e.target) || anyOverlayOpen() || e.ctrlKey || e.metaKey || e.altKey || isReadOnly) return;
+  // atajos de herramientas, como en Excalidraw
+  const toolKeys = { v: "move", h: "move", m: "marker", p: "marker", t: "text", e: "eraser" };
+  const k = e.key.toLowerCase();
+  if (toolKeys[k]){ setTool(toolKeys[k]); return; }
+  if (e.key === "Escape" && tool !== "move"){ setTool("move"); return; }
+  // espacio apretado: arrastrar mueve el lienzo con cualquier herramienta
+  if (e.key === " "){
+    e.preventDefault();
+    if (!spaceDown){ spaceDown = true; document.body.classList.add("space-pan"); }
   }
 });
+document.addEventListener("keyup", (e) => {
+  if (e.key === " " && spaceDown){ spaceDown = false; document.body.classList.remove("space-pan"); }
+});
+window.addEventListener("blur", () => { spaceDown = false; document.body.classList.remove("space-pan"); });
+function isTypingTarget(t){
+  return !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+}
 
 // --- pan y zoom del lienzo ---
 const viewport = $("#viewport");
 // Un dedo (o el mouse) arrastra el lienzo; dos dedos hacen zoom (pellizco)
 // alrededor del punto medio entre ellos, y moverlos juntos tambien arrastra.
+// Con el marcador, la goma o el texto, un dedo dibuja/borra/escribe; para
+// moverse quedan los dos dedos, la rueda, espacio + arrastrar o el boton
+// del medio del mouse.
 const activePointers = new Map();
 let pinch = null;
 function startPanFrom(p){
@@ -840,17 +1364,28 @@ function pinchInfo(){
   };
 }
 viewport.addEventListener("pointerdown", (e) => {
-  if (e.target.closest(".card") || e.target.closest("[data-cut]")) return;
-  if (e.pointerType === "mouse" && e.button !== 0) return;
+  if (e.target.closest(".card") || e.target.closest("[data-cut]") || e.target.closest(".mark-text.editing")) return;
+  if (e.pointerType === "mouse" && e.button !== 0 && e.button !== 1) return;
+  // tocar afuera de un texto que se esta escribiendo lo cierra (y con la
+  // herramienta de texto, ese toque no abre otro)
+  if (textEditing){ finishTextEdit(); if (tool === "text") return; }
   viewport.setPointerCapture(e.pointerId);
   activePointers.set(e.pointerId, { x:e.clientX, y:e.clientY });
   if (activePointers.size === 2){
+    cancelInk();
     const { dist, mid } = pinchInfo();
     isPanning = false; panStart = null; interacting = true;
     pinch = { dist, world: screenToWorld(mid.x, mid.y), zoom };
   } else if (activePointers.size === 1){
+    const wantsPan = tool === "move" || spaceDown || e.button === 1 || isReadOnly;
+    if (!wantsPan && startInk(e)) return;
     startPanFrom({ x:e.clientX, y:e.clientY });
   }
+});
+// doble clic en el corcho vacio: un texto ahi mismo
+viewport.addEventListener("dblclick", (e) => {
+  if (tool !== "move" || isReadOnly || e.target.closest(".card") || e.target.closest(".mark-text") || e.target.closest("[data-cut]")) return;
+  editText(null, eventWorld(e));
 });
 viewport.addEventListener("pointermove", (e) => {
   if (!activePointers.has(e.pointerId)) return;
@@ -858,6 +1393,7 @@ viewport.addEventListener("pointermove", (e) => {
   // no seguir arrastrando el lienzo con el mouse suelto
   if (e.pointerType === "mouse" && e.buttons === 0){ endPan(e); return; }
   activePointers.set(e.pointerId, { x:e.clientX, y:e.clientY });
+  if (inkGesture && inkGesture.pointerId === e.pointerId){ moveInk(e); return; }
   if (pinch && activePointers.size >= 2){
     const { dist, mid } = pinchInfo();
     zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, pinch.zoom * dist / pinch.dist));
@@ -873,6 +1409,7 @@ viewport.addEventListener("pointermove", (e) => {
   applyTransform();
 });
 function endPan(e){
+  if (inkGesture && inkGesture.pointerId === e.pointerId) endInk(e);
   activePointers.delete(e.pointerId);
   if (pinch && activePointers.size < 2){
     pinch = null;
@@ -909,7 +1446,7 @@ $("#centerBtn").onclick = () => fitAll();
 // editor abierto o un arrastre en curso, se recarga apenas termine.
 let refreshPending = false, refreshTimer = null;
 async function refresh(){
-  if (anyOverlayOpen() || interacting){ refreshPending = true; return; }
+  if (anyOverlayOpen() || interacting || textEditing || inkGesture){ refreshPending = true; return; }
   refreshPending = false;
   try{ await loadNotes(); render(); }catch(e){}
 }
@@ -992,6 +1529,7 @@ if ("serviceWorker" in navigator) {
   });
 }
 
+setTool("move");
 loadMe();
 loadNotes().then(() => {
   initView();

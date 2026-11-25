@@ -31,6 +31,11 @@ const {
   listLinks,
   createLink,
   deleteLink,
+  listMarks,
+  createMark,
+  updateMark,
+  deleteMark,
+  restoreMark,
   addPushSubscription,
   removePushSubscription,
 } = require("./db");
@@ -204,7 +209,15 @@ app.post(IMPORT_PATH, ensureAuthApi, ensureWriteAccess, (req, res) => {
   for (const l of Array.isArray(req.body.links) ? req.body.links : []) {
     if (l && idMap.has(l.a) && idMap.has(l.b) && createLink(req.user.boardOwner, idMap.get(l.a), idMap.get(l.b))) linked++;
   }
-  res.status(201).json({ imported, linked });
+  let marks = 0;
+  for (const m of Array.isArray(req.body.marks) ? req.body.marks : []) {
+    if (!m || !MARK_KINDS.includes(m.kind)) continue;
+    const fields = cleanMark(m, m.kind);
+    if (!fields) continue;
+    createMark(req.user.boardOwner, { kind: m.kind, ...fields, created: num(m.created) });
+    marks++;
+  }
+  res.status(201).json({ imported, linked, marks });
 });
 
 app.put("/api/notes/:id", ensureAuthApi, ensureWriteAccess, (req, res) => {
@@ -266,6 +279,79 @@ app.post("/api/links", ensureAuthApi, ensureWriteAccess, (req, res) => {
 
 app.delete("/api/links/:id", ensureAuthApi, ensureWriteAccess, (req, res) => {
   if (!deleteLink(req.params.id, req.user.boardOwner)) return res.status(404).json({ error: "no encontrado" });
+  res.status(204).end();
+});
+
+// --- marcador y textos sueltos escritos sobre el corcho ---
+const MARK_KINDS = ["stroke", "text"];
+const MAX_STROKE_POINTS = 3000;
+const MAX_TEXT_LENGTH = 1000;
+const isNum = (v) => typeof v === "number" && Number.isFinite(v);
+// Valida lo que manda la web. Con partial = true (al editar) los campos que
+// no vienen se dejan como estan. Devuelve null si algo no tiene sentido.
+function cleanMark(input, kind, partial = false) {
+  const out = {};
+  for (const k of ["x", "y"]) {
+    if (input[k] === undefined && partial) continue;
+    if (!isNum(input[k])) return null;
+    out[k] = Math.round(input[k] * 10) / 10;
+  }
+  if (input.color !== undefined || !partial) {
+    if (typeof input.color !== "string" || !/^#[0-9a-fA-F]{6}$/.test(input.color)) return null;
+    out.color = input.color;
+  }
+  if (input.size !== undefined || !partial) {
+    if (!isNum(input.size)) return null;
+    out.size = Math.min(120, Math.max(1, input.size));
+  }
+  if (input.data !== undefined || !partial) {
+    const d = input.data;
+    if (!d || typeof d !== "object") return null;
+    if (kind === "stroke") {
+      const pts = d.points;
+      if (!Array.isArray(pts) || pts.length < 1 || pts.length > MAX_STROKE_POINTS) return null;
+      if (!pts.every((p) => Array.isArray(p) && p.length === 3 && p.every(isNum))) return null;
+      out.data = {
+        points: pts.map(([px, py, pr]) => [Math.round(px * 10) / 10, Math.round(py * 10) / 10, Math.round(Math.min(1, Math.max(0, pr)) * 100) / 100]),
+        pen: !!d.pen,
+      };
+    } else {
+      if (typeof d.text !== "string" || !d.text.trim() || d.text.length > MAX_TEXT_LENGTH) return null;
+      out.data = { text: d.text };
+    }
+  }
+  return out;
+}
+
+app.get("/api/marks", ensureAuthApi, (req, res) => {
+  res.json(listMarks(req.user.boardOwner));
+});
+
+app.post("/api/marks", ensureAuthApi, ensureWriteAccess, (req, res) => {
+  const body = req.body || {};
+  if (!MARK_KINDS.includes(body.kind)) return res.status(400).json({ error: "kind tiene que ser 'stroke' o 'text'" });
+  const fields = cleanMark(body, body.kind);
+  if (!fields) return res.status(400).json({ error: "marca invalida" });
+  res.status(201).json(createMark(req.user.boardOwner, { kind: body.kind, ...fields }));
+});
+
+app.patch("/api/marks/:id", ensureAuthApi, ensureWriteAccess, (req, res) => {
+  const body = req.body || {};
+  // el tipo no se puede cambiar; se usa solo para validar "data"
+  const kind = body.data && typeof body.data.text === "string" ? "text" : "stroke";
+  const fields = cleanMark(body, kind, true);
+  if (!fields) return res.status(400).json({ error: "marca invalida" });
+  if (!updateMark(req.params.id, req.user.boardOwner, fields, kind)) return res.status(404).json({ error: "no encontrada" });
+  res.status(204).end();
+});
+
+app.delete("/api/marks/:id", ensureAuthApi, ensureWriteAccess, (req, res) => {
+  if (!deleteMark(req.params.id, req.user.boardOwner)) return res.status(404).json({ error: "no encontrada" });
+  res.status(204).end();
+});
+
+app.post("/api/marks/:id/restore", ensureAuthApi, ensureWriteAccess, (req, res) => {
+  if (!restoreMark(req.params.id, req.user.boardOwner)) return res.status(404).json({ error: "no encontrada" });
   res.status(204).end();
 });
 

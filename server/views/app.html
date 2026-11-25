@@ -56,6 +56,24 @@
     <h2>El corcho está vacío</h2>
     <p>Tocá <b>+ Nueva nota</b>, escribile al bot de Telegram, o mandale un audio. Queda clavado acá.</p>
   </div>
+  <div class="draw-tools" id="drawTools">
+    <button class="tool on" data-tool="move" title="Mover (V)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20"/></svg>
+    </button>
+    <button class="tool" data-tool="marker" title="Marcador (M)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.17 6.81a1 1 0 0 0-3.99-3.99L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.62l4.35-1.32a2 2 0 0 0 .83-.5z"/><path d="m15 5 4 4"/></svg>
+    </button>
+    <button class="tool" data-tool="text" title="Texto (T)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>
+    </button>
+    <button class="tool" data-tool="eraser" title="Goma (E)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>
+    </button>
+    <div class="tool-opts" id="toolOpts">
+      <div class="ink-colors" id="inkColors"></div>
+      <button class="ink-size" id="inkSize" title="Grosor"><span></span></button>
+    </div>
+  </div>
   <div class="canvas-controls">
     <button id="zoomOut" title="Alejar">−</button>
     <span class="zoom-label" id="zoomLabel">100%</span>

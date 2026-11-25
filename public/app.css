@@ -327,3 +327,56 @@
   .user a:hover{color:var(--ink)}
   body.readonly #addBtn, body.readonly #importBtn, body.readonly .card .del, body.readonly .card .check, body.readonly .card .resize-handle{display:none!important}
   body.readonly .card{cursor:pointer}
+
+  /* --- marcador y textos sueltos sobre el corcho --- */
+  .marks{position:absolute; left:0; top:0; width:0; height:0; overflow:visible; pointer-events:none}
+  .marks-svg{position:absolute; left:0; top:0; width:1px; height:1px; overflow:visible; pointer-events:none}
+  /* tinta de marcador: apenas transparente y con algo de sombra, apoyada en el corcho */
+  .marks-svg path{opacity:.93; filter:drop-shadow(0 1px 0 rgba(30,15,5,.18))}
+  .mark-text{
+    position:absolute; white-space:pre; font-family:var(--hand); font-weight:600; line-height:1.05;
+    padding:2px 6px; border-radius:6px; pointer-events:auto; cursor:grab;
+    user-select:none; -webkit-user-select:none; touch-action:none;
+    text-shadow:0 1px 0 rgba(30,15,5,.18); outline:0;
+  }
+  .mark-text.dragging{cursor:grabbing}
+  .mark-text.editing{
+    cursor:text; user-select:text; -webkit-user-select:text; min-width:1.2em; z-index:45;
+    background:rgba(255,255,255,.18); box-shadow:0 0 0 2px rgba(43,36,28,.35);
+  }
+  .mark-text.editing:empty::before{content:"Escribí…"; opacity:.45}
+  body.readonly .mark-text{cursor:inherit}
+
+  /* cursor segun la herramienta */
+  body.tool-marker .canvas-viewport{cursor:crosshair}
+  body.tool-text .canvas-viewport{cursor:text}
+  body.tool-eraser .canvas-viewport{cursor:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22'%3E%3Ccircle cx='11' cy='11' r='9' fill='rgba(255,255,255,.55)' stroke='%232B241C' stroke-width='1.5'/%3E%3C/svg%3E") 11 11, crosshair}
+  body:not(.tool-move) .mark-text:not(.editing){cursor:inherit}
+  body.tool-text .mark-text:not(.editing){cursor:text}
+  body.space-pan .canvas-viewport, body.space-pan .mark-text{cursor:grab}
+  body.space-pan .canvas-viewport.panning{cursor:grabbing}
+
+  /* barra de herramientas */
+  .draw-tools{
+    position:absolute; left:16px; top:50%; transform:translateY(-50%); z-index:15;
+    display:flex; flex-direction:column; align-items:center; gap:4px;
+    background:var(--paper); border-radius:18px; padding:6px; box-shadow:rgba(70,55,30,.18) 0 4px 16px;
+  }
+  .draw-tools .tool{
+    width:36px; height:36px; border-radius:12px; background:transparent; color:var(--ink);
+    display:grid; place-items:center; transition:background .15s;
+  }
+  .draw-tools .tool svg{width:19px; height:19px}
+  .draw-tools .tool:hover{background:color-mix(in srgb, var(--ink) 10%, transparent)}
+  .draw-tools .tool.on{background:var(--ink); color:var(--paper)}
+  .tool-opts{display:none; flex-direction:column; align-items:center; gap:7px; padding-top:8px; margin-top:2px; border-top:1px solid color-mix(in srgb, var(--ink) 14%, transparent)}
+  .tool-opts.show{display:flex}
+  .ink-colors{display:flex; flex-direction:column; gap:7px}
+  .ink-swatch{width:22px; height:22px; border-radius:50%; box-shadow:inset 0 0 0 1px rgba(0,0,0,.2); transition:transform .12s}
+  .ink-swatch:hover{transform:scale(1.12)}
+  .ink-swatch.sel{outline:2px solid var(--ink); outline-offset:2px}
+  .ink-size{width:30px; height:30px; border-radius:10px; background:transparent; display:grid; place-items:center}
+  .ink-size:hover{background:color-mix(in srgb, var(--ink) 10%, transparent)}
+  .ink-size span{display:block; width:6px; height:6px; border-radius:50%; background:var(--ink); transition:all .15s}
+  .ink-size.thick span{width:14px; height:14px}
+  body.readonly .draw-tools{display:none}

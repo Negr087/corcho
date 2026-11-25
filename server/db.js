@@ -67,6 +67,25 @@ db.exec(`
 `);
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS links_pair ON links (owner, a, b)");
 
+// Lo que se escribe directo sobre el corcho: trazos de marcador (kind
+// "stroke", data = { points: [[x, y, presion], ...], pen }) y textos sueltos
+// (kind "text", data = { text }). Todo en coordenadas del lienzo.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS marks (
+    id TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    x REAL NOT NULL,
+    y REAL NOT NULL,
+    color TEXT NOT NULL,
+    size REAL NOT NULL,
+    data TEXT NOT NULL,
+    created INTEGER NOT NULL,
+    deleted_at INTEGER
+  )
+`);
+db.exec("CREATE INDEX IF NOT EXISTS marks_owner ON marks (owner)");
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
     sid TEXT PRIMARY KEY,
@@ -301,6 +320,7 @@ function purgeDeletedNotes(olderThanMs) {
                           OR b IN (SELECT id FROM notes WHERE deleted_at IS NOT NULL AND deleted_at < ?)`
   ).run(cutoff, cutoff);
   db.prepare("DELETE FROM notes WHERE deleted_at IS NOT NULL AND deleted_at < ?").run(cutoff);
+  db.prepare("DELETE FROM marks WHERE deleted_at IS NOT NULL AND deleted_at < ?").run(cutoff);
   return images;
 }
 
@@ -369,6 +389,53 @@ function createLink(owner, noteA, noteB) {
 
 function deleteLink(id, owner) {
   return changed(db.prepare("DELETE FROM links WHERE id = ? AND owner = ?").run(id, owner), owner);
+}
+
+function rowToMark(r) {
+  return { id: r.id, kind: r.kind, x: r.x, y: r.y, color: r.color, size: r.size, data: JSON.parse(r.data), created: r.created };
+}
+
+function listMarks(owner) {
+  return db
+    .prepare("SELECT * FROM marks WHERE owner = ? AND deleted_at IS NULL ORDER BY created ASC")
+    .all(owner)
+    .map(rowToMark);
+}
+
+function createMark(owner, { kind, x, y, color, size, data, created }) {
+  const mark = { id: genId(), kind, x, y, color, size, data, created: created || Date.now() };
+  db.prepare(
+    "INSERT INTO marks (id, owner, kind, x, y, color, size, data, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(mark.id, owner, kind, x, y, color, size, JSON.stringify(data), mark.created);
+  emitChange(owner);
+  return mark;
+}
+
+// fields: cualquier subconjunto de { x, y, color, size, data }. Si viene
+// "data", la marca tiene que ser de ese `kind` (no se puede pasar un trazo a
+// texto ni al reves).
+function updateMark(id, owner, fields, kind) {
+  const cols = ["x", "y", "color", "size", "data"].filter((k) => fields[k] !== undefined);
+  if (!cols.length) return !!db.prepare("SELECT 1 FROM marks WHERE id = ? AND owner = ? AND deleted_at IS NULL").get(id, owner);
+  const values = cols.map((k) => (k === "data" ? JSON.stringify(fields[k]) : fields[k]));
+  const res = db
+    .prepare(
+      `UPDATE marks SET ${cols.map((k) => k + " = ?").join(", ")} WHERE id = ? AND owner = ? AND deleted_at IS NULL` +
+        (fields.data !== undefined ? " AND kind = ?" : "")
+    )
+    .run(...values, id, owner, ...(fields.data !== undefined ? [kind] : []));
+  return changed(res, owner);
+}
+
+function deleteMark(id, owner) {
+  return changed(
+    db.prepare("UPDATE marks SET deleted_at = ? WHERE id = ? AND owner = ? AND deleted_at IS NULL").run(Date.now(), id, owner),
+    owner
+  );
+}
+
+function restoreMark(id, owner) {
+  return changed(db.prepare("UPDATE marks SET deleted_at = NULL WHERE id = ? AND owner = ?").run(id, owner), owner);
 }
 
 function addPushSubscription(owner, subscription) {
@@ -441,6 +508,11 @@ module.exports = {
   listLinks,
   createLink,
   deleteLink,
+  listMarks,
+  createMark,
+  updateMark,
+  deleteMark,
+  restoreMark,
   setReminder,
   getDueReminders,
   markReminded,
